@@ -45,8 +45,12 @@ class DocAgentBot(ActivityHandler):
         await turn_context.send_activity(Activity(type=ActivityTypes.typing))
 
         # Load conversation history from CosmosDB
-        cosmos = get_cosmos_store()
-        history = cosmos.get_history(conversation_id)
+        try:
+            cosmos = get_cosmos_store()
+            history = cosmos.get_history(conversation_id)
+        except Exception as e:
+            logger.error(f"[Bot] CosmosDB read failed: {e}")
+            history = []
 
         # Invoke the LangChain RAG agent — returns structured AgentResult
         result = await invoke_agent(query=user_text, conversation_history=history)
@@ -60,12 +64,17 @@ class DocAgentBot(ActivityHandler):
         else:
             full_response = answer
 
-        # Save this turn to CosmosDB
-        cosmos.save_turn(
-            conversation_id=conversation_id,
-            user_message=user_text,
-            bot_response=full_response,
-        )
+        # Save only the answer text (not sources footer) to CosmosDB
+        # so conversation history stays clean for query rewriting
+        try:
+            cosmos = get_cosmos_store()
+            cosmos.save_turn(
+                conversation_id=conversation_id,
+                user_message=user_text,
+                bot_response=answer,
+            )
+        except Exception as e:
+            logger.error(f"[Bot] CosmosDB write failed: {e}")
 
         # Send the response back
         await turn_context.send_activity(full_response)

@@ -212,6 +212,7 @@ async def test_query(request: Request):
     model_name = body.get("model")
     top_k = body.get("top_k")
     temperature = body.get("temperature")
+    filter_expr = body.get("filter")
 
     if not query:
         return {"error": "Missing 'query' field"}
@@ -237,6 +238,7 @@ async def test_query(request: Request):
             model_name=model_name,
             top_k=int(top_k) if top_k else None,
             temperature=float(temperature) if temperature is not None else None,
+            filter_expr=filter_expr,
         )
         answer = agent_result["answer"]
         sources = agent_result["sources"]

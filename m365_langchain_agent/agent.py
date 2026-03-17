@@ -9,18 +9,24 @@ Returns structured results: answer text + list of source documents with full met
 
 import logging
 import os
+import re
 from typing import List, Dict, Optional, TypedDict
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from m365_langchain_agent.utils.search import get_search_client
 
 logger = logging.getLogger(__name__)
+
+# Shared credential + token provider for Azure OpenAI (Managed Identity)
+_credential = DefaultAzureCredential()
+_token_provider = get_bearer_token_provider(_credential, "https://cognitiveservices.azure.com/.default")
 
 
 class Source(TypedDict, total=False):
@@ -57,6 +63,14 @@ When the knowledge base does not contain relevant information:
 - Say "The knowledge base does not contain enough information to answer that."
 - Do NOT make up an answer or hallucinate information.
 - Do NOT say "the provided documents" — the user is not providing documents, the system is searching a knowledge base.
+
+Disambiguation rules:
+- If the retrieved documents come from MULTIPLE distinct source files and the question does not specify which one, DO NOT blend answers from all of them.
+- Instead, ask the user to clarify which document they are interested in.
+- List the available documents by name so the user can pick.
+- Example: "I found information in several documents: **[1] payments_sttm_workbook.xlsx**, **[2] logistics_sttm_workbook.xlsx**, and **[3] customer_sttm_workbook.xlsx**. Which one would you like me to answer from?"
+- If the question clearly targets a specific topic or document (e.g. "payments STTM"), answer directly from the matching document without asking.
+- If there is only one source document, answer directly.
 
 Keep answers concise, well-structured, and focused on the question asked.
 Use markdown formatting (bold, bullet points, headers) where it improves readability."""
@@ -95,7 +109,7 @@ def _build_llm(temperature: float = None, model_name: str = None) -> AzureChatOp
         api_version = "2024-12-01-preview"
     kwargs = dict(
         azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-        api_key=os.environ["AZURE_OPENAI_API_KEY"],
+        azure_ad_token_provider=_token_provider,
         azure_deployment=deployment,
         api_version=api_version,
     )
@@ -173,17 +187,90 @@ def _build_sources(documents: List[Dict]) -> List[Source]:
     return sources
 
 
+QUERY_REWRITE_PROMPT = """Given the conversation history and a follow-up question, rewrite the follow-up question as a standalone search query that captures the full intent.
+
+Rules:
+- If the follow-up is already self-contained, return it as-is.
+- Do NOT answer the question — only rewrite it.
+- Keep the rewritten query concise (under 30 words).
+- Return ONLY the rewritten query, nothing else."""
+
+
+async def _rewrite_query_with_history(
+    query: str,
+    conversation_history: List[Dict],
+    model_name: str = None,
+) -> str:
+    """Rewrite a follow-up question into a standalone search query using conversation context.
+
+    Example:
+        History: "What is the refund policy?" → "Refunds are processed within 30 days..."
+        Follow-up: "How long does it take?"
+        Rewritten: "How long does the refund policy take to process?"
+    """
+    if not conversation_history:
+        return query
+
+    # Build a compact history summary (last 2 exchanges)
+    history_lines = []
+    for turn in conversation_history[-4:]:
+        role = "User" if turn["role"] == "user" else "Assistant"
+        # Truncate long assistant responses to save tokens
+        content = turn["content"][:300] if turn["role"] == "assistant" else turn["content"]
+        history_lines.append(f"{role}: {content}")
+
+    history_text = "\n".join(history_lines)
+
+    messages = [
+        SystemMessage(content=QUERY_REWRITE_PROMPT),
+        HumanMessage(content=f"Conversation:\n{history_text}\n\nFollow-up question: {query}\n\nRewritten query:"),
+    ]
+
+    try:
+        llm = _build_llm(temperature=0.0, model_name=model_name)
+        response = await llm.ainvoke(messages)
+        rewritten = response.content.strip().strip('"')
+        logger.info(f"[Agent] Query rewrite: '{query}' → '{rewritten}'")
+        return rewritten
+    except Exception as e:
+        logger.warning(f"[Agent] Query rewrite failed, using original: {e}")
+        return query
+
+
+def _get_unique_source_names(documents: List[Dict]) -> List[str]:
+    """Extract unique source file names from documents, preserving order."""
+    seen = set()
+    names = []
+    for d in documents:
+        name = d.get("document_title") or d.get("file_name") or "Untitled"
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
+
+
 def _format_context(documents: List[Dict]) -> str:
     """Format retrieved documents into numbered context for the LLM."""
     if not documents:
         return "No documents found."
+
+    # Add disambiguation hint when results span multiple source files
+    unique_sources = _get_unique_source_names(documents)
+    hint = ""
+    if len(unique_sources) > 1:
+        source_list = ", ".join(f'"{s}"' for s in unique_sources)
+        hint = (
+            f"NOTE: These documents come from {len(unique_sources)} distinct sources: "
+            f"{source_list}. If the user's question is ambiguous about which source "
+            f"they mean, ask them to clarify before answering.\n\n"
+        )
 
     parts = []
     for i, d in enumerate(documents):
         title = d.get("document_title") or d.get("file_name") or "Untitled"
         parts.append(f"[{i+1}] (Source: {title})\n{d['content']}")
 
-    return "\n\n".join(parts)
+    return hint + "\n\n".join(parts)
 
 
 async def invoke_agent(
@@ -193,6 +280,7 @@ async def invoke_agent(
     temperature: float = None,
     system_prompt: str = None,
     model_name: str = None,
+    filter_expr: str = None,
 ) -> AgentResult:
     """Invoke the RAG agent: search → deduplicate → generate → return structured result.
 
@@ -203,6 +291,7 @@ async def invoke_agent(
         temperature: LLM temperature (default: DEFAULT_TEMPERATURE).
         system_prompt: Override system prompt (default: SYSTEM_PROMPT).
         model_name: Azure OpenAI deployment name (default: DEFAULT_MODEL).
+        filter_expr: Optional OData filter for metadata filtering (e.g. "file_name eq 'policy.pdf'").
 
     Returns:
         AgentResult with 'answer', 'sources', and 'raw_chunks'.
@@ -210,10 +299,15 @@ async def invoke_agent(
     effective_top_k = top_k if top_k is not None else DEFAULT_TOP_K
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
-    # 1. Retrieve documents from Azure AI Search
+    # 0. Rewrite query using conversation context (for follow-up questions)
+    search_query = query
+    if conversation_history:
+        search_query = await _rewrite_query_with_history(query, conversation_history, model_name)
+
+    # 1. Retrieve documents from Azure AI Search (using rewritten query)
     search_client = get_search_client()
-    raw_documents = search_client.search(query, top_k=effective_top_k)
-    logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}) for: {query[:100]}")
+    raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
+    logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}) for: {search_query[:100]}")
 
     # 2. Deduplicate — group chunks from same document
     documents = _deduplicate_sources(raw_documents)
@@ -249,8 +343,13 @@ Answer:"""
     try:
         response = await llm.ainvoke(messages)
         answer = response.content
-        logger.info(f"[Agent] Generated answer, length={len(answer)}, model={model_name or DEFAULT_MODEL}")
-        return AgentResult(answer=answer, sources=sources, raw_chunks=raw_documents, full_prompt=full_prompt)
+        # Only return sources that the LLM actually cited in its answer
+        cited_sources = _filter_cited_sources(answer, sources)
+        logger.info(
+            f"[Agent] Generated answer, length={len(answer)}, model={model_name or DEFAULT_MODEL}, "
+            f"cited={len(cited_sources)}/{len(sources)} sources"
+        )
+        return AgentResult(answer=answer, sources=cited_sources, raw_chunks=raw_documents, full_prompt=full_prompt)
     except Exception as e:
         logger.error(f"[Agent] LLM call failed: {e}")
         return AgentResult(
@@ -259,6 +358,21 @@ Answer:"""
             raw_chunks=[],
             full_prompt=full_prompt,
         )
+
+
+def _filter_cited_sources(answer: str, sources: List[Source]) -> List[Source]:
+    """Return only sources that the LLM actually cited in its answer.
+
+    Parses [1], [2], etc. from the answer text. If no citations are found,
+    returns all sources as fallback (the LLM may have used prose references).
+    """
+    # Only match small numbers [1]-[99] to avoid false positives like [401] tax codes
+    cited_indices = set(int(m) for m in re.findall(r"\[(\d{1,2})\]", answer))
+    if not cited_indices:
+        return sources
+    filtered = [s for s in sources if s.get("index") in cited_indices]
+    # If parsed indices didn't match any actual source, fall back to all sources
+    return filtered if filtered else sources
 
 
 def format_sources_markdown(sources: List[Source]) -> str:

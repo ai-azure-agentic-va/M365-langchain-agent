@@ -14,6 +14,7 @@ import os
 import time
 from typing import List, Dict, Optional
 
+from azure.identity import DefaultAzureCredential
 from azure.cosmos import CosmosClient, PartitionKey
 from azure.cosmos.exceptions import CosmosResourceNotFoundError
 
@@ -35,12 +36,12 @@ class CosmosConversationStore:
 
     def __init__(self):
         endpoint = os.environ["AZURE_COSMOS_ENDPOINT"]
-        key = os.environ["AZURE_COSMOS_KEY"]
         db_name = os.environ.get("AZURE_COSMOS_DATABASE", "m365-langchain-agent")
         container_name = os.environ.get("AZURE_COSMOS_CONTAINER", "conversations")
         self.ttl_seconds = int(os.environ.get("COSMOS_TTL_SECONDS", "86400"))  # 24h
 
-        self.client = CosmosClient(endpoint, credential=key)
+        credential = DefaultAzureCredential()
+        self.client = CosmosClient(endpoint, credential=credential)
         self.database = self.client.create_database_if_not_exists(id=db_name)
         self.container = self.database.create_container_if_not_exists(
             id=container_name,

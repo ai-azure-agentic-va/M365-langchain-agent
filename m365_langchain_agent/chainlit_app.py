@@ -253,7 +253,7 @@ async def on_message(message: cl.Message):
         cosmos.save_turn(
             conversation_id=conversation_id,
             user_message=user_text,
-            bot_response=full_content,
+            bot_response=answer,
         )
     except Exception as e:
         logger.error(f"[Chainlit] CosmosDB write failed: {e}")
