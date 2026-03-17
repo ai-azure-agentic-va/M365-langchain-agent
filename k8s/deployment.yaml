@@ -1,0 +1,126 @@
+---
+# ConfigMap for non-secret environment variables
+# IMPORTANT: Replace all <placeholder> values with your actual Azure resource values
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: m365-langchain-agent-config
+  namespace: agent
+  labels:
+    app: m365-langchain-agent
+data:
+  AZURE_OPENAI_ENDPOINT: "<your-openai-endpoint>"                # e.g. https://<resource>.cognitiveservices.azure.com
+  AZURE_OPENAI_DEPLOYMENT_NAME: "<your-llm-deployment>"          # e.g. gpt-4.1
+  AZURE_OPENAI_API_VERSION: "2024-05-01-preview"
+  AZURE_OPENAI_EMBEDDING_DEPLOYMENT: "<your-embedding-deployment>"  # e.g. text-embedding-3-small
+  AZURE_SEARCH_ENDPOINT: "<your-search-endpoint>"                # e.g. https://<service>.search.windows.net
+  AZURE_SEARCH_INDEX_NAME: "<your-search-index>"                 # e.g. custom-kb-index
+  AZURE_SEARCH_SEMANTIC_CONFIG_NAME: "<your-semantic-config>"    # e.g. custom-kb-semantic-config
+  AZURE_SEARCH_EMBEDDING_FIELD: "content_vector"
+  AZURE_COSMOS_ENDPOINT: "<your-cosmos-endpoint>"                # e.g. https://<account>.documents.azure.com:443/
+  AZURE_COSMOS_DATABASE: "m365-langchain-agent"
+  AZURE_COSMOS_CONTAINER: "conversations"
+  BOT_APP_ID: "<your-bot-app-id>"                                # Bot Service MSI client ID or App ID
+  AZURE_OPENAI_AVAILABLE_MODELS: "gpt-4.1,gpt-4.1-mini,o3-mini" # Comma-separated for Chainlit model selector
+  LANGCHAIN_TRACING_V2: "true"
+  LANGCHAIN_PROJECT: "m365-langchain-agent"
+  USER_INTERFACE: "CHAINLIT_UI"                                 # BOT_SERVICE or CHAINLIT_UI
+  DEPLOY_TARGET: "KUBERNETES"                                   # KUBERNETES or CONTAINER_APPS
+  DEFAULT_TOP_K: "5"
+  DEFAULT_TEMPERATURE: "0.2"
+  LOG_LEVEL: "INFO"
+---
+# M365 LangChain Agent — single deployment (no Redis, no Postgres)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: m365-langchain-agent
+  namespace: agent
+  labels:
+    app: m365-langchain-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: m365-langchain-agent
+  template:
+    metadata:
+      labels:
+        app: m365-langchain-agent
+    spec:
+      containers:
+      - name: m365-langchain-agent
+        image: <acr-name>.azurecr.io/m365-langchain-agent:latest    # Replace <acr-name> with your ACR
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+          protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: m365-langchain-agent-config
+        - secretRef:
+            name: m365-langchain-agent-secrets
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        readinessProbe:
+          httpGet:
+            path: /readiness
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: m365-langchain-agent
+  namespace: agent
+  labels:
+    app: m365-langchain-agent
+spec:
+  selector:
+    app: m365-langchain-agent
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+---
+# Ingress — all paths via Application Gateway (HTTPS)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: m365-langchain-agent-ingress
+  namespace: agent
+  annotations:
+    kubernetes.io/ingress.class: azure/application-gateway
+    appgw.ingress.kubernetes.io/appgw-ssl-certificate: "<your-ssl-cert-name>"    # Replace with your SSL cert name
+    appgw.ingress.kubernetes.io/use-private-ip: "false"
+    appgw.ingress.kubernetes.io/health-probe-path: "/health"
+spec:
+  rules:
+  - host: "<your-cluster-fqdn>"    # Replace with your cluster FQDN
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: m365-langchain-agent
+            port:
+              number: 8000
+  tls:
+  - hosts:
+    - "<your-cluster-fqdn>"        # Replace with your cluster FQDN

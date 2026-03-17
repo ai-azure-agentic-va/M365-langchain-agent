@@ -1,0 +1,33 @@
+# LangChain (no LangGraph)
+langchain>=0.3.14
+langchain-openai>=0.2.14
+langchain-core>=0.3.29
+
+# Azure AI Search
+azure-search-documents>=11.6.0b7
+azure-identity>=1.19.0
+
+# CosmosDB
+azure-cosmos>=4.7.0
+
+# Bot Framework SDK
+botbuilder-core>=4.16.0
+botbuilder-integration-aiohttp>=4.16.0
+
+# Web framework
+fastapi>=0.115.0
+uvicorn>=0.34.0
+aiohttp>=3.9.0
+
+# Chat UI (used when USER_INTERFACE=CHAINLIT_UI)
+chainlit>=1.3.0
+
+# LangSmith tracing
+langsmith>=0.1.0
+
+# Foundry agent registration
+requests>=2.31.0
+
+# Core
+pydantic>=2.10.5
+python-dotenv>=1.0.1
