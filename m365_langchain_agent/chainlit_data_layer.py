@@ -8,6 +8,7 @@ Reads/writes to the same CosmosDB container used by cosmos_store.py.
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from chainlit.data import BaseDataLayer
@@ -26,6 +27,14 @@ from m365_langchain_agent.cosmos_store import get_cosmos_store
 logger = logging.getLogger(__name__)
 
 
+def _ts_to_iso(ts) -> str:
+    """Convert a Unix timestamp to ISO 8601 string for Chainlit UI."""
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError):
+        return datetime.now(tz=timezone.utc).isoformat()
+
+
 class CosmosDataLayer(BaseDataLayer):
     """Minimal data layer that exposes CosmosDB conversations in Chainlit's sidebar."""
 
@@ -38,10 +47,10 @@ class CosmosDataLayer(BaseDataLayer):
     # -- User management (no auth, return a default user) --
 
     async def get_user(self, identifier: str) -> Optional[PersistedUser]:
-        return PersistedUser(id=identifier, identifier=identifier, createdAt=str(time.time()))
+        return PersistedUser(id=identifier, identifier=identifier, createdAt=_ts_to_iso(time.time()))
 
     async def create_user(self, user: User) -> Optional[PersistedUser]:
-        return PersistedUser(id=user.identifier, identifier=user.identifier, createdAt=str(time.time()))
+        return PersistedUser(id=user.identifier, identifier=user.identifier, createdAt=_ts_to_iso(time.time()))
 
     # -- Thread listing (sidebar) --
 
@@ -89,15 +98,15 @@ class CosmosDataLayer(BaseDataLayer):
                         input="",
                         streaming=False,
                         metadata={},
-                        createdAt=str(created + i),
+                        createdAt=_ts_to_iso(created + i),
                     ))
 
                 threads.append(ThreadDict(
                     id=item["id"],
-                    createdAt=str(item.get("created_at", "")),
+                    createdAt=_ts_to_iso(item.get("created_at", time.time())),
                     name=first_user_msg,
-                    userId=None,
-                    userIdentifier=None,
+                    userId="default-user",
+                    userIdentifier="default-user",
                     tags=None,
                     metadata=None,
                     steps=steps,
@@ -137,15 +146,15 @@ class CosmosDataLayer(BaseDataLayer):
                     input="",
                     streaming=False,
                     metadata={},
-                    createdAt=str(created + i),
+                    createdAt=_ts_to_iso(created + i),
                 ))
 
             return ThreadDict(
                 id=thread_id,
-                createdAt=str(item.get("created_at", "")),
+                createdAt=_ts_to_iso(item.get("created_at", time.time())),
                 name=next((m["content"][:80] for m in messages if m["role"] == "user"), "Chat"),
-                userId=None,
-                userIdentifier=None,
+                userId="default-user",
+                userIdentifier="default-user",
                 tags=None,
                 metadata=None,
                 steps=steps,
@@ -156,7 +165,7 @@ class CosmosDataLayer(BaseDataLayer):
             return None
 
     async def get_thread_author(self, thread_id: str) -> str:
-        return "anonymous"
+        return "default-user"
 
     async def update_thread(
         self,

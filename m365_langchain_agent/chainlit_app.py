@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 import chainlit as cl
 from chainlit.config import config as chainlit_config
 from chainlit.input_widget import Select, Slider, TextInput
+from chainlit.types import ThreadDict
 from chainlit.user import User
 
 # UI configuration
@@ -113,6 +114,53 @@ async def on_chat_start():
             "temperature, top K, and system prompt."
         )
     ).send()
+
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    """Resume a previous conversation thread from the sidebar."""
+    conversation_id = thread["id"]
+    cl.user_session.set("conversation_id", conversation_id)
+    logger.info(f"[Chainlit] Resumed thread: conversation_id={conversation_id}")
+
+    available_models = get_available_models()
+    settings = await cl.ChatSettings(
+        [
+            Select(
+                id="model",
+                label="Model",
+                values=available_models,
+                initial_value=DEFAULT_MODEL if DEFAULT_MODEL in available_models else available_models[0],
+                description="Azure OpenAI deployment to use for generation.",
+            ),
+            Slider(
+                id="top_k",
+                label="Top K (Retrieved Chunks)",
+                initial=DEFAULT_TOP_K,
+                min=1,
+                max=20,
+                step=1,
+                description="Number of chunks to retrieve from AI Search.",
+            ),
+            Slider(
+                id="temperature",
+                label="Temperature",
+                initial=DEFAULT_TEMPERATURE,
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                description="LLM randomness. Lower = more deterministic, higher = more creative.",
+            ),
+            TextInput(
+                id="system_prompt",
+                label="System Prompt",
+                initial=SYSTEM_PROMPT,
+                description="Instructions for the LLM. Edit to change behavior.",
+            ),
+        ]
+    ).send()
+
+    cl.user_session.set("settings", settings)
 
 
 @cl.on_settings_update
