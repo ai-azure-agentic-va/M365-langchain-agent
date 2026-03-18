@@ -677,7 +677,7 @@ spec:
         image: $FULL_IMAGE
         imagePullPolicy: Always
         ports:
-        - containerPort: 8000
+        - containerPort: 8080
           protocol: TCP
         envFrom:
         - configMapRef:
@@ -694,14 +694,14 @@ spec:
         readinessProbe:
           httpGet:
             path: /readiness
-            port: 8000
+            port: 8080
           initialDelaySeconds: 15
           periodSeconds: 10
           timeoutSeconds: 5
         livenessProbe:
           httpGet:
             path: /health
-            port: 8000
+            port: 8080
           initialDelaySeconds: 30
           periodSeconds: 30
           timeoutSeconds: 10
@@ -718,8 +718,8 @@ spec:
   selector:
     app: m365-langchain-agent
   ports:
-  - port: 8000
-    targetPort: 8000
+  - port: 8080
+    targetPort: 8080
     protocol: TCP
 ---
 apiVersion: networking.k8s.io/v1
@@ -743,7 +743,7 @@ spec:
           service:
             name: m365-langchain-agent
             port:
-              number: 8000
+              number: 8080
   tls:
   - hosts:
     - "$CLUSTER_FQDN"
@@ -764,12 +764,12 @@ log_ok "Pod is running"
 
 # 31. Verify health endpoints (via kubectl port-forward)
 log_step "Verifying health endpoints"
-kubectl port-forward svc/m365-langchain-agent 8000:8000 -n "$K8S_NAMESPACE" &>/dev/null &
+kubectl port-forward svc/m365-langchain-agent 8080:8080 -n "$K8S_NAMESPACE" &>/dev/null &
 PF_PID=$!
 sleep 3
 
-HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo "000")
-READY_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/readiness 2>/dev/null || echo "000")
+HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health 2>/dev/null || echo "000")
+READY_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/readiness 2>/dev/null || echo "000")
 kill $PF_PID 2>/dev/null || true
 
 if [[ "$HEALTH_STATUS" == "200" ]]; then
@@ -1109,7 +1109,7 @@ LANGCHAIN_TRACING_V2=$TRACING_ENABLED
 LANGCHAIN_PROJECT=m365-langchain-agent
 LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
 LOG_LEVEL=INFO
-PORT=8000
+PORT=8080
 ENVEOF
 log_ok "Saved .env.deployed with all credentials (for local development)"
 

@@ -88,7 +88,7 @@ class DocAgentBot(ActivityHandler):
         for member in members_added:
             if member.id != turn_context.activity.recipient.id:
                 welcome = (
-                    "Hello! I'm your **Knowledge Base Assistant**. Ask me questions about "
+                    "Hello! I'm the **ETS VA Assistant**. Ask me questions about "
                     "internal policies, procedures, and documentation. "
                     "I'll search the knowledge base and provide answers with "
                     "**clickable source links** and citations."

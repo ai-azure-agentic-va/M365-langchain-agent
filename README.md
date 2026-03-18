@@ -45,14 +45,14 @@ pip install -r requirements.txt
 cp .env.example .env    # Fill in your Azure resource values
 
 # 3. Run (Bot Service mode — default)
-python -m m365_langchain_agent.main
+python app.py
 
 # 4. Run (Chainlit UI mode)
-USER_INTERFACE=CHAINLIT_UI python -m m365_langchain_agent.main
-# Open http://localhost:8000/chat/
+USER_INTERFACE=CHAINLIT_UI python app.py
+# Open http://localhost:8080/chat/
 
 # 5. Verify
-curl http://localhost:8000/health
+curl http://localhost:8080/health
 # {"status":"healthy","service":"m365-langchain-agent","deploy_target":"CONTAINER_APPS"}
 ```
 
@@ -271,7 +271,7 @@ chmod +x deploy-container-apps.sh
 **What it does:**
 1. Registers `Microsoft.App` + `Microsoft.OperationalInsights` providers
 2. Creates a Container Apps Environment
-3. Creates the Container App with external ingress (port 8000)
+3. Creates the Container App with external ingress (port 8080)
 4. Sets all env vars (OpenAI, Search, CosmosDB, Bot, LangSmith)
 5. Outputs the FQDN and runs a health check
 
@@ -370,10 +370,9 @@ All configuration is externalized. See [.env.example](.env.example) for the full
 
 ```
 m365-langchain-agent/
+├── app.py                     # Entry point: FastAPI app + mode routing (Chainlit UI / Bot Service)
+│                              #   + MsiBotFrameworkAdapter (custom MSI auth for Bot SDK)
 ├── m365_langchain_agent/
-│   ├── main.py                # Entry point -- routes to Chainlit or Bot Service
-│   ├── app.py                 # FastAPI app: /api/messages, /health, /readiness, /test/query
-│   │                          #   + MsiBotFrameworkAdapter (custom MSI auth for Bot SDK)
 │   ├── bot.py                 # Bot Framework ActivityHandler -- bridges Bot Service <> agent
 │   ├── agent.py               # LangChain RAG pipeline: search -> deduplicate -> generate
 │   │                          #   + model selection, reasoning model detection, source building

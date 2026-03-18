@@ -360,6 +360,84 @@ Answer:"""
         )
 
 
+async def invoke_agent_stream(
+    query: str,
+    conversation_history: Optional[List[Dict]] = None,
+    top_k: int = None,
+    temperature: float = None,
+    system_prompt: str = None,
+    model_name: str = None,
+    filter_expr: str = None,
+):
+    """Streaming version of invoke_agent — yields token strings as they arrive.
+
+    After all tokens are yielded, yields a final dict with metadata:
+    {"sources": [...], "raw_chunks": [...], "full_prompt": "...", "answer": "..."}
+    """
+    effective_top_k = top_k if top_k is not None else DEFAULT_TOP_K
+    effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
+
+    search_query = query
+    if conversation_history:
+        search_query = await _rewrite_query_with_history(query, conversation_history, model_name)
+
+    search_client = get_search_client()
+    raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
+    documents = _deduplicate_sources(raw_documents)
+    context = _format_context(documents)
+    sources = _build_sources(documents)
+
+    messages = [SystemMessage(content=effective_prompt)]
+    if conversation_history:
+        for turn in conversation_history[-6:]:
+            if turn["role"] == "user":
+                messages.append(HumanMessage(content=turn["content"]))
+            elif turn["role"] == "assistant":
+                messages.append(AIMessage(content=turn["content"]))
+
+    user_prompt = f"""Question: {query}
+
+Documents:
+{context}
+
+Answer:"""
+    messages.append(HumanMessage(content=user_prompt))
+    full_prompt = f"=== SYSTEM PROMPT ===\n{effective_prompt}\n\n=== USER PROMPT (with context) ===\n{user_prompt}"
+
+    llm = _build_llm(temperature=temperature, model_name=model_name)
+    answer_chunks = []
+    try:
+        async for chunk in llm.astream(messages):
+            token = chunk.content
+            if token:
+                answer_chunks.append(token)
+                yield token
+
+        full_answer = "".join(answer_chunks)
+        cited_sources = _filter_cited_sources(full_answer, sources)
+        logger.info(
+            f"[Agent] Streamed answer, length={len(full_answer)}, model={model_name or DEFAULT_MODEL}, "
+            f"cited={len(cited_sources)}/{len(sources)} sources"
+        )
+        yield {
+            "type": "metadata",
+            "answer": full_answer,
+            "sources": cited_sources,
+            "raw_chunks": raw_documents,
+            "full_prompt": full_prompt,
+        }
+    except Exception as e:
+        logger.error(f"[Agent] LLM stream failed: {e}")
+        yield "Sorry, I couldn't generate an answer right now. Please try again."
+        yield {
+            "type": "metadata",
+            "answer": "Sorry, I couldn't generate an answer right now. Please try again.",
+            "sources": [],
+            "raw_chunks": [],
+            "full_prompt": full_prompt,
+        }
+
+
 def _filter_cited_sources(answer: str, sources: List[Source]) -> List[Source]:
     """Return only sources that the LLM actually cited in its answer.
 

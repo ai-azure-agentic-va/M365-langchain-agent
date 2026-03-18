@@ -109,9 +109,9 @@ Every box is a separate system. Arrows show who initiates communication.
 │    │ Channels: Teams,       │       │ Cert: <ssl-cert-name>        │         │
 │    │   DirectLine, WebChat  │       │                              │         │
 │    │                        │       │ Routes:                      │         │
-│    │ Endpoint:              │       │  /api/messages → :8000       │         │
-│    │  https://<fqdn>/       │       │  /health       → :8000       │         │
-│    │    api/messages         │       │  /readiness    → :8000       │         │
+│    │ Endpoint:              │       │  /api/messages → :8080       │         │
+│    │  https://<fqdn>/       │       │  /health       → :8080       │         │
+│    │    api/messages         │       │  /readiness    → :8080       │         │
 │    └────────────────────────┘       └──────────────┬───────────────┘         │
 │                                                    │                         │
 │                                                    │ HTTP (plain, in-cluster)│
@@ -122,7 +122,7 @@ Every box is a separate system. Arrows show who initiates communication.
 │    ┌─────────────────────────────────────────────────────────────────┐       │
 │    │                                                                 │       │
 │    │  M365 LangChain Agent Container                                 │       │
-│    │  [Python 3.10 · FastAPI · uvicorn · port 8000]                  │       │
+│    │  [Python 3.10 · FastAPI · uvicorn · port 8080]                  │       │
 │    │                                                                 │       │
 │    │  Image: <acr-name>.azurecr.io/                                  │       │
 │    │         m365-langchain-agent:<tag>                               │       │
@@ -215,7 +215,7 @@ Every box is a separate system. Arrows show who initiates communication.
 │  │  ════════════════════════════                                       │     │
 │  │                                                                     │     │
 │  │  Responsibilities:                                                  │     │
-│  │    • HTTP server (uvicorn, port 8000)                               │     │
+│  │    • HTTP server (uvicorn, port 8080)                               │     │
 │  │    • POST /api/messages — Bot Framework entry point                 │     │
 │  │    • GET /health, /readiness — Kubernetes probes                    │     │
 │  │    • Initializes BotFrameworkAdapter with credentials                │     │
@@ -403,7 +403,7 @@ Every box is a separate system. Arrows show who initiates communication.
 | 1 | Employee | Types question | Teams UI | "What is the VPN policy?" |
 | 2 | Teams | Sends to Bot Service | Internal | Activity JSON with type=message |
 | 3 | Bot Service | Forwards to endpoint | HTTPS POST `/api/messages` | Adds JWT auth header |
-| 4 | App Gateway | TLS termination | HTTPS → HTTP | Forwards to pod port 8000 |
+| 4 | App Gateway | TLS termination | HTTPS → HTTP | Forwards to pod port 8080 |
 | 5 | app.py | Deserializes Activity | In-process | BotFrameworkAdapter.process_activity() |
 | 6 | bot.py | Validates, extracts text | In-process | on_message_activity() |
 | 7 | cosmos_store.py | Loads conversation history | HTTPS → CosmosDB | get_history(conversation_id) |
@@ -442,7 +442,7 @@ Every box is a separate system. Arrows show who initiates communication.
 │  │  │ CPU: 250m-500m | Memory: 512Mi-1Gi                │     │      │
 │  │  └──────────────────────────────────────────────────┘     │      │
 │  │                                                            │      │
-│  │  Service: m365-langchain-agent (ClusterIP :8000)           │      │
+│  │  Service: m365-langchain-agent (ClusterIP :8080)           │      │
 │  │  Ingress: /api/messages, /health, /readiness               │      │
 │  │                                                            │      │
 │  │  Application Gateway (AGIC):                               │      │
@@ -652,7 +652,7 @@ Internet                    App Gateway                     AKS Pod
    │  Certificate must be      │   App Gateway terminates      │
    │  trusted by Azure Bot     │   TLS and forwards as HTTP    │
    │  Service (NOT self-signed)│   to ClusterIP service        │
-   │                           │   on port 8000                │
+   │                           │   on port 8080                │
 ```
 
 **Critical requirement:** Azure Bot Service **will not connect** to endpoints with self-signed

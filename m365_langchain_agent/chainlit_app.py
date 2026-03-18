@@ -1,7 +1,7 @@
 """Chainlit UI — browser-based chat interface for the RAG agent.
 
 Activated when USER_INTERFACE=CHAINLIT_UI. Provides a web chat UI
-at http://localhost:8000 that calls the same invoke_agent() function
+at http://localhost:8080 that calls the same invoke_agent() function
 as the Bot Framework path.
 
 Features:
@@ -25,12 +25,15 @@ logger = logging.getLogger(__name__)
 import chainlit as cl
 from chainlit.config import config as chainlit_config
 from chainlit.input_widget import Select, Slider, TextInput
+from chainlit.user import User
 
-# Disable file attachments in the UI
+# UI configuration
+chainlit_config.ui.name = "ETS VA Assistant"
 chainlit_config.features.spontaneous_file_upload = None
 
 from m365_langchain_agent.agent import (
     invoke_agent,
+    invoke_agent_stream,
     format_sources_markdown,
     get_available_models,
     SYSTEM_PROMPT,
@@ -39,6 +42,19 @@ from m365_langchain_agent.agent import (
     DEFAULT_MODEL,
 )
 from m365_langchain_agent.cosmos_store import get_cosmos_store
+from m365_langchain_agent.chainlit_data_layer import CosmosDataLayer
+
+
+# --- Data layer (conversation history sidebar) ---
+@cl.data_layer
+def get_data_layer():
+    return CosmosDataLayer()
+
+
+# --- Auth: auto-authenticate all users so the sidebar is accessible ---
+@cl.header_auth_callback
+def header_auth_callback(headers: dict) -> User:
+    return User(identifier="default-user", metadata={"role": "user"})
 
 
 @cl.on_chat_start
@@ -89,14 +105,12 @@ async def on_chat_start():
 
     await cl.Message(
         content=(
-            "Hello! I'm your **Knowledge Base Assistant**. Ask me questions about "
+            "Hello! I'm the **ETS VA Assistant**. Ask me questions about "
             "internal policies, procedures, and documentation.\n\n"
             "I'll search the knowledge base and provide answers with "
             "**clickable source links** and citations.\n\n"
             "Use the **Settings** panel (gear icon) to adjust model, "
-            "temperature, top K, and system prompt.\n\n"
-            "Each answer includes expandable debug sections showing "
-            "**retrieved chunks**, the **full LLM prompt**, and **active settings**."
+            "temperature, top K, and system prompt."
         )
     ).send()
 
@@ -145,21 +159,32 @@ async def on_message(message: cl.Message):
         logger.error(f"[Chainlit] CosmosDB read failed: {e}")
         history = []
 
-    # Invoke the RAG agent with current settings
-    result = await invoke_agent(
+    # Stream the RAG agent response token by token
+    msg = cl.Message(content="")
+    await msg.send()
+
+    answer = ""
+    sources = []
+    raw_chunks = []
+    full_prompt = ""
+
+    async for chunk in invoke_agent_stream(
         query=user_text,
         conversation_history=history,
         top_k=top_k,
         temperature=temperature,
         system_prompt=system_prompt if system_prompt != SYSTEM_PROMPT else None,
         model_name=model if model != DEFAULT_MODEL else None,
-    )
-    answer = result["answer"]
-    sources = result["sources"]
-    raw_chunks = result.get("raw_chunks", [])
-    full_prompt = result.get("full_prompt", "")
+    ):
+        if isinstance(chunk, dict) and chunk.get("type") == "metadata":
+            answer = chunk["answer"]
+            sources = chunk["sources"]
+            raw_chunks = chunk.get("raw_chunks", [])
+            full_prompt = chunk.get("full_prompt", "")
+        else:
+            await msg.stream_token(chunk)
 
-    # Build inline source links for the answer footer
+    # Append source links after streaming completes
     source_lines = []
     for s in sources:
         title = s.get("title", "Untitled")
@@ -170,14 +195,10 @@ async def on_message(message: cl.Message):
         else:
             source_lines.append(f"[{idx}] {title}")
 
-    # Compose the full answer with sources footer
-    full_content = answer
     if source_lines:
-        full_content += "\n\n---\n**Sources:**\n" + "\n".join(source_lines)
+        await msg.stream_token("\n\n---\n**Sources:**\n" + "\n".join(source_lines))
 
-    # Send the main answer message first
-    msg = cl.Message(content=full_content)
-    await msg.send()
+    await msg.update()
 
     # --- Debug Accordion: Retrieved Chunks (collapsible Step under the message) ---
     index_name = os.environ.get("AZURE_SEARCH_INDEX_NAME", "N/A")

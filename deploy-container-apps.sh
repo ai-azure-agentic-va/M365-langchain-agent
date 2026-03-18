@@ -46,6 +46,9 @@ AZURE_COSMOS_CONTAINER="${AZURE_COSMOS_CONTAINER:-conversations}"
 BOT_APP_ID="${BOT_APP_ID:-}"
 BOT_APP_PASSWORD="${BOT_APP_PASSWORD:-}"
 
+# Chainlit auth (required for conversation history sidebar)
+CHAINLIT_AUTH_SECRET="${CHAINLIT_AUTH_SECRET:?Set CHAINLIT_AUTH_SECRET — run: python3 -c \"import secrets; print(secrets.token_hex(32))\"}"
+
 # LangSmith (optional)
 LANGSMITH_API_KEY="${LANGSMITH_API_KEY:-}"
 
@@ -102,7 +105,7 @@ az containerapp create \
     --registry-server "$ACR_SERVER" \
     --registry-username "$ACR_USERNAME" \
     --registry-password "$ACR_PASSWORD" \
-    --target-port 8000 \
+    --target-port 8080 \
     --ingress external \
     --min-replicas 1 \
     --max-replicas 3 \
@@ -127,8 +130,9 @@ az containerapp create \
         LANGCHAIN_TRACING_V2="$TRACING_ENABLED" \
         LANGCHAIN_PROJECT="m365-langchain-agent" \
         LANGSMITH_API_KEY="$LANGSMITH_API_KEY" \
+        CHAINLIT_AUTH_SECRET="$CHAINLIT_AUTH_SECRET" \
         LOG_LEVEL="INFO" \
-        PORT="8000" \
+        PORT="8080" \
     --only-show-errors -o none
 
 # Step 5: Get the FQDN and verify

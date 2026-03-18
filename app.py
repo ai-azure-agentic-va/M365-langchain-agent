@@ -1,14 +1,15 @@
-"""FastAPI application — Bot Framework /api/messages endpoint + health checks.
+"""Single entry point for the container.
 
-This is the single entry point for the container. It:
-    1. Receives Bot Framework Activity JSON at POST /api/messages
-    2. Validates the incoming request using BotFrameworkAdapter
-    3. Routes to DocAgentBot for processing
-    4. Exposes /health and /readiness for K8s probes
+Modes (set USER_INTERFACE env var):
+    CHAINLIT_UI  → Mounts Chainlit web chat at /chat, redirects / → /chat
+    BOT_SERVICE  → Exposes /api/messages for Bot Framework (default)
+
+Both modes share /health, /readiness, /test/query endpoints.
 """
 
 import logging
 import os
+import sys
 
 from dotenv import load_dotenv
 
@@ -283,6 +284,35 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.environ.get("PORT", "8000"))
-    logger.info(f"[App] Starting M365 LangChain Agent on port {port}")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", "8080"))
+    user_interface = os.environ.get("USER_INTERFACE", "BOT_SERVICE").upper().strip()
+    deploy_target = os.environ.get("DEPLOY_TARGET", "CONTAINER_APPS").upper().strip()
+
+    logger.info(f"[App] DEPLOY_TARGET={deploy_target}, USER_INTERFACE={user_interface}")
+
+    if user_interface == "CHAINLIT_UI":
+        logger.info(f"[App] Starting Chainlit UI on port {port}")
+        from chainlit.utils import mount_chainlit
+        from fastapi.responses import RedirectResponse
+
+        chainlit_target = os.path.join(
+            os.path.dirname(__file__), "m365_langchain_agent", "chainlit_app.py"
+        )
+        mount_chainlit(app=app, target=chainlit_target, path="/chat")
+
+        # Replace root route with redirect to Chainlit UI
+        app.routes[:] = [r for r in app.routes if not (hasattr(r, "path") and r.path == "/")]
+
+        @app.get("/", include_in_schema=False)
+        async def root_redirect():
+            return RedirectResponse(url="/chat/")
+
+        uvicorn.run(app, host="0.0.0.0", port=port)
+
+    elif user_interface == "BOT_SERVICE":
+        logger.info(f"[App] Starting Bot Service on port {port}")
+        uvicorn.run(app, host="0.0.0.0", port=port)
+
+    else:
+        logger.error(f"[App] Unknown USER_INTERFACE='{user_interface}'. Use CHAINLIT_UI or BOT_SERVICE.")
+        sys.exit(1)
