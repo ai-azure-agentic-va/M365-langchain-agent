@@ -12,6 +12,8 @@ from botbuilder.schema import Activity, ActivityTypes
 
 from m365_langchain_agent.agent import invoke_agent, format_sources_markdown
 from m365_langchain_agent.cosmos_store import get_cosmos_store
+from m365_langchain_agent.metrics_store import get_metrics_store
+from m365_langchain_agent.content_safety import run_all_evaluations, CONTENT_SAFETY_ENABLED
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +78,36 @@ class DocAgentBot(ActivityHandler):
         except Exception as e:
             logger.error(f"[Bot] CosmosDB write failed: {e}")
 
+        # Run content safety evaluations (backend only)
+        safety_results = {}
+        if CONTENT_SAFETY_ENABLED and result.get("raw_chunks"):
+            try:
+                context = "\n\n".join(c.get("content", "") for c in result["raw_chunks"])
+                safety_results = await run_all_evaluations(
+                    query=user_text, answer=answer, context=context
+                )
+            except Exception as e:
+                logger.error(f"[Bot] Content safety evaluation failed: {e}")
+
+        # Save metrics (token usage, groundedness, safety)
+        try:
+            metrics = get_metrics_store()
+            metrics.save_metrics(
+                conversation_id=conversation_id,
+                query=user_text,
+                model="default",
+                token_usage=result.get("token_usage", {}),
+                content_safety=safety_results if safety_results else None,
+            )
+        except Exception as e:
+            logger.error(f"[Bot] Metrics save failed: {e}")
+
         # Send the response back
+        token_usage = result.get("token_usage", {})
         await turn_context.send_activity(full_response)
         logger.info(
             f"[Bot] Response sent: conversation={conversation_id}, "
-            f"sources={len(sources)}"
+            f"sources={len(sources)}, tokens={token_usage.get('total_tokens', 0)}"
         )
 
     async def on_members_added_activity(self, members_added, turn_context: TurnContext) -> None:

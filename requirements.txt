@@ -28,6 +28,9 @@ langsmith>=0.1.0
 # Foundry agent registration
 requests>=2.31.0
 
+# Content Safety (Azure AI Evaluation SDK)
+azure-ai-evaluation>=1.0.0
+
 # Core
 pydantic>=2.10.5
 python-dotenv>=1.0.1

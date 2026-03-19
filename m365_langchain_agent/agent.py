@@ -43,15 +43,32 @@ class Source(TypedDict, total=False):
     preview: str
 
 
+class TokenUsage(TypedDict, total=False):
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
 class AgentResult(TypedDict):
     answer: str
     sources: List[Source]
     raw_chunks: List[Dict]
     full_prompt: str
+    token_usage: TokenUsage
 
 
 # System prompt — instructs GPT-4.1 to use numbered citations that match source indices
 SYSTEM_PROMPT = """You are a helpful assistant that answers questions using the provided documents from the knowledge base.
+
+General rules:
+- Do NOT use emojis in any response. This is professional enterprise software and emojis can corrupt logs.
+- Keep answers concise, well-structured, and focused on the question asked.
+- Use markdown formatting (bold, bullet points, headers) where it improves readability.
+
+Greetings and small talk:
+- If the user sends a greeting (e.g. "Hello", "Hi", "Good morning", "Hey"), respond naturally and briefly. Do NOT search the knowledge base or cite documents for greetings.
+- If the user sends a thank you (e.g. "Thanks", "Thank you", "Appreciate it"), acknowledge it naturally without citing documents.
+- For greetings, introduce yourself briefly: "Hello! I'm the ETS Virtual Assistant. How can I help you today?"
 
 Citation rules:
 - Reference documents with numbered citations like [1], [2], etc.
@@ -70,10 +87,20 @@ Disambiguation rules:
 - List the available documents by name so the user can pick.
 - Example: "I found information in several documents: **[1] payments_sttm_workbook.xlsx**, **[2] logistics_sttm_workbook.xlsx**, and **[3] customer_sttm_workbook.xlsx**. Which one would you like me to answer from?"
 - If the question clearly targets a specific topic or document (e.g. "payments STTM"), answer directly from the matching document without asking.
-- If there is only one source document, answer directly.
+- If there is only one source document, answer directly."""
 
-Keep answers concise, well-structured, and focused on the question asked.
-Use markdown formatting (bold, bullet points, headers) where it improves readability."""
+
+# Greeting detection — skip search for greetings/small talk
+_GREETING_PATTERNS = re.compile(
+    r"^\s*(hi|hello|hey|good\s*(morning|afternoon|evening)|greetings|"
+    r"thanks|thank\s*you|thx|appreciate\s*it|bye|goodbye|see\s*you)\s*[!.?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_greeting(query: str) -> bool:
+    """Check if the user message is a greeting or small talk (no search needed)."""
+    return bool(_GREETING_PATTERNS.match(query.strip()))
 
 
 def get_available_models() -> list:
@@ -102,8 +129,8 @@ def _is_reasoning_model(deployment: str) -> bool:
 def _build_llm(temperature: float = None, model_name: str = None) -> AzureChatOpenAI:
     """Create the Azure OpenAI LLM client with configurable parameters."""
     deployment = model_name or DEFAULT_MODEL
-    # Reasoning models (o1, o3) require a newer API version and don't support temperature
-    api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
+    # Use a recent API version that supports stream_options for token usage tracking
+    api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-01-preview")
     is_reasoning = _is_reasoning_model(deployment)
     if is_reasoning:
         api_version = "2024-12-01-preview"
@@ -112,6 +139,7 @@ def _build_llm(temperature: float = None, model_name: str = None) -> AzureChatOp
         azure_ad_token_provider=_token_provider,
         azure_deployment=deployment,
         api_version=api_version,
+        stream_usage=True,
     )
     if not is_reasoning:
         kwargs["temperature"] = temperature if temperature is not None else DEFAULT_TEMPERATURE
@@ -273,6 +301,30 @@ def _format_context(documents: List[Dict]) -> str:
     return hint + "\n\n".join(parts)
 
 
+def _extract_token_usage(response) -> TokenUsage:
+    """Extract token usage from LangChain AIMessage response_metadata or usage_metadata."""
+    try:
+        # Try usage_metadata first (LangChain's native field, populated with stream_usage=True)
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            um = response.usage_metadata
+            return TokenUsage(
+                input_tokens=um.get("input_tokens", 0),
+                output_tokens=um.get("output_tokens", 0),
+                total_tokens=um.get("total_tokens", 0),
+            )
+        # Fall back to response_metadata (non-streaming or older versions)
+        usage = response.response_metadata.get("token_usage", {})
+        if not usage:
+            usage = response.response_metadata.get("usage", {})
+        return TokenUsage(
+            input_tokens=usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0) or usage.get("output_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+        )
+    except Exception:
+        return TokenUsage(input_tokens=0, output_tokens=0, total_tokens=0)
+
+
 async def invoke_agent(
     query: str,
     conversation_history: Optional[List[Dict]] = None,
@@ -299,25 +351,43 @@ async def invoke_agent(
     effective_top_k = top_k if top_k is not None else DEFAULT_TOP_K
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
-    # 0. Rewrite query using conversation context (for follow-up questions)
+    # 0. Greeting detection — skip search for greetings/small talk
+    if _is_greeting(query):
+        logger.info(f"[Agent] Greeting detected, skipping search: {query}")
+        messages = [
+            SystemMessage(content=effective_prompt),
+            HumanMessage(content=query),
+        ]
+        llm = _build_llm(temperature=temperature, model_name=model_name)
+        response = await llm.ainvoke(messages)
+        token_usage = _extract_token_usage(response)
+        return AgentResult(
+            answer=response.content,
+            sources=[],
+            raw_chunks=[],
+            full_prompt=f"=== GREETING (no search) ===\n{query}",
+            token_usage=token_usage,
+        )
+
+    # 1. Rewrite query using conversation context (for follow-up questions)
     search_query = query
     if conversation_history:
         search_query = await _rewrite_query_with_history(query, conversation_history, model_name)
 
-    # 1. Retrieve documents from Azure AI Search (using rewritten query)
+    # 2. Retrieve documents from Azure AI Search (using rewritten query)
     search_client = get_search_client()
     raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
     logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}) for: {search_query[:100]}")
 
-    # 2. Deduplicate — group chunks from same document
+    # 3. Deduplicate — group chunks from same document
     documents = _deduplicate_sources(raw_documents)
     logger.info(f"[Agent] After dedup: {len(documents)} unique sources")
 
-    # 3. Build context and sources
+    # 4. Build context and sources
     context = _format_context(documents)
     sources = _build_sources(documents)
 
-    # 4. Build message history for the LLM
+    # 5. Build message history for the LLM
     messages = [SystemMessage(content=effective_prompt)]
 
     if conversation_history:
@@ -338,18 +408,19 @@ Answer:"""
     # Capture the full prompt for debug visibility
     full_prompt = f"=== SYSTEM PROMPT ===\n{effective_prompt}\n\n=== USER PROMPT (with context) ===\n{user_prompt}"
 
-    # 5. Generate answer
+    # 6. Generate answer
     llm = _build_llm(temperature=temperature, model_name=model_name)
     try:
         response = await llm.ainvoke(messages)
         answer = response.content
+        token_usage = _extract_token_usage(response)
         # Only return sources that the LLM actually cited in its answer
         cited_sources = _filter_cited_sources(answer, sources)
         logger.info(
             f"[Agent] Generated answer, length={len(answer)}, model={model_name or DEFAULT_MODEL}, "
-            f"cited={len(cited_sources)}/{len(sources)} sources"
+            f"cited={len(cited_sources)}/{len(sources)} sources, tokens={token_usage}"
         )
-        return AgentResult(answer=answer, sources=cited_sources, raw_chunks=raw_documents, full_prompt=full_prompt)
+        return AgentResult(answer=answer, sources=cited_sources, raw_chunks=raw_documents, full_prompt=full_prompt, token_usage=token_usage)
     except Exception as e:
         logger.error(f"[Agent] LLM call failed: {e}")
         return AgentResult(
@@ -357,6 +428,7 @@ Answer:"""
             sources=[],
             raw_chunks=[],
             full_prompt=full_prompt,
+            token_usage=TokenUsage(input_tokens=0, output_tokens=0, total_tokens=0),
         )
 
 
@@ -376,6 +448,31 @@ async def invoke_agent_stream(
     """
     effective_top_k = top_k if top_k is not None else DEFAULT_TOP_K
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
+
+    # Greeting detection — skip search, stream greeting response directly
+    if _is_greeting(query):
+        logger.info(f"[Agent] Greeting detected (stream), skipping search: {query}")
+        messages = [
+            SystemMessage(content=effective_prompt),
+            HumanMessage(content=query),
+        ]
+        llm = _build_llm(temperature=temperature, model_name=model_name)
+        answer_chunks = []
+        async for chunk in llm.astream(messages):
+            token = chunk.content
+            if token:
+                answer_chunks.append(token)
+                yield token
+        full_answer = "".join(answer_chunks)
+        yield {
+            "type": "metadata",
+            "answer": full_answer,
+            "sources": [],
+            "raw_chunks": [],
+            "full_prompt": f"=== GREETING (no search) ===\n{query}",
+            "token_usage": TokenUsage(input_tokens=0, output_tokens=0, total_tokens=0),
+        }
+        return
 
     search_query = query
     if conversation_history:
@@ -406,18 +503,31 @@ Answer:"""
 
     llm = _build_llm(temperature=temperature, model_name=model_name)
     answer_chunks = []
+    reasoning_chunks = []
+    token_usage = TokenUsage(input_tokens=0, output_tokens=0, total_tokens=0)
     try:
         async for chunk in llm.astream(messages):
             token = chunk.content
             if token:
                 answer_chunks.append(token)
                 yield token
+            # Capture reasoning/thinking content from o-series models
+            reasoning_token = (chunk.additional_kwargs or {}).get("reasoning_content", "")
+            if reasoning_token:
+                reasoning_chunks.append(reasoning_token)
+                yield {"type": "reasoning", "content": reasoning_token}
+            # Capture token usage from the last chunk's response_metadata
+            if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                token_usage = _extract_token_usage(chunk)
+            elif hasattr(chunk, "response_metadata") and chunk.response_metadata:
+                token_usage = _extract_token_usage(chunk)
 
         full_answer = "".join(answer_chunks)
+        full_reasoning = "".join(reasoning_chunks)
         cited_sources = _filter_cited_sources(full_answer, sources)
         logger.info(
             f"[Agent] Streamed answer, length={len(full_answer)}, model={model_name or DEFAULT_MODEL}, "
-            f"cited={len(cited_sources)}/{len(sources)} sources"
+            f"cited={len(cited_sources)}/{len(sources)} sources, tokens={token_usage}"
         )
         yield {
             "type": "metadata",
@@ -425,6 +535,8 @@ Answer:"""
             "sources": cited_sources,
             "raw_chunks": raw_documents,
             "full_prompt": full_prompt,
+            "token_usage": token_usage,
+            "reasoning": full_reasoning,
         }
     except Exception as e:
         logger.error(f"[Agent] LLM stream failed: {e}")
@@ -435,6 +547,7 @@ Answer:"""
             "sources": [],
             "raw_chunks": [],
             "full_prompt": full_prompt,
+            "token_usage": TokenUsage(input_tokens=0, output_tokens=0, total_tokens=0),
         }
 
 

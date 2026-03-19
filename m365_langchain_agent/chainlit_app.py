@@ -37,6 +37,7 @@ from m365_langchain_agent.agent import (
     invoke_agent_stream,
     format_sources_markdown,
     get_available_models,
+    _is_reasoning_model,
     SYSTEM_PROMPT,
     DEFAULT_TOP_K,
     DEFAULT_TEMPERATURE,
@@ -44,6 +45,8 @@ from m365_langchain_agent.agent import (
 )
 from m365_langchain_agent.cosmos_store import get_cosmos_store
 from m365_langchain_agent.chainlit_data_layer import CosmosDataLayer
+from m365_langchain_agent.metrics_store import get_metrics_store
+from m365_langchain_agent.content_safety import run_all_evaluations, CONTENT_SAFETY_ENABLED
 
 
 # --- Data layer (conversation history sidebar) ---
@@ -207,6 +210,14 @@ async def on_message(message: cl.Message):
         logger.error(f"[Chainlit] CosmosDB read failed: {e}")
         history = []
 
+    # Show "Thinking..." loader for reasoning models (o1, o3) that don't stream
+    is_reasoning = _is_reasoning_model(model)
+    thinking_step = None
+    if is_reasoning:
+        thinking_step = cl.Step(name="Thinking...", type="llm")
+        thinking_step.output = ""
+        await thinking_step.send()
+
     # Stream the RAG agent response token by token
     msg = cl.Message(content="")
     await msg.send()
@@ -215,6 +226,8 @@ async def on_message(message: cl.Message):
     sources = []
     raw_chunks = []
     full_prompt = ""
+    token_usage = {}
+    reasoning_text = ""
 
     async for chunk in invoke_agent_stream(
         query=user_text,
@@ -229,8 +242,22 @@ async def on_message(message: cl.Message):
             sources = chunk["sources"]
             raw_chunks = chunk.get("raw_chunks", [])
             full_prompt = chunk.get("full_prompt", "")
+            token_usage = chunk.get("token_usage", {})
+            reasoning_text = chunk.get("reasoning", "")
+        elif isinstance(chunk, dict) and chunk.get("type") == "reasoning":
+            # Stream reasoning content into the thinking step
+            if thinking_step:
+                thinking_step.output += chunk["content"]
+                await thinking_step.update()
         else:
             await msg.stream_token(chunk)
+
+    # Finalize thinking step
+    if thinking_step:
+        if not thinking_step.output:
+            thinking_step.output = "No reasoning steps available for this response."
+        thinking_step.name = "Reasoning"
+        await thinking_step.update()
 
     # Append source links after streaming completes
     source_lines = []
@@ -299,8 +326,12 @@ async def on_message(message: cl.Message):
     prompt_step.output = f"```\n{full_prompt}\n```"
     await prompt_step.send()
 
-    # --- Debug Accordion: Active Settings ---
+    # --- Debug Accordion: Active Settings + Token Usage ---
     prompt_type = "Custom" if system_prompt != SYSTEM_PROMPT else "Default"
+    input_tokens = token_usage.get("input_tokens", 0)
+    output_tokens = token_usage.get("output_tokens", 0)
+    total_tokens = token_usage.get("total_tokens", 0)
+
     settings_step = cl.Step(name="Settings Used", type="tool")
     settings_step.parent_id = msg.id
     settings_step.output = (
@@ -312,7 +343,10 @@ async def on_message(message: cl.Message):
         f"| **System Prompt** | _{prompt_type}_ |\n"
         f"| **Index** | `{index_name}` |\n"
         f"| **Sources Found** | {len(sources)} |\n"
-        f"| **Raw Chunks** | {len(raw_chunks)} |"
+        f"| **Raw Chunks** | {len(raw_chunks)} |\n"
+        f"| **Input Tokens** | {input_tokens} |\n"
+        f"| **Output Tokens** | {output_tokens} |\n"
+        f"| **Total Tokens** | {total_tokens} |"
     )
     await settings_step.send()
 
@@ -327,7 +361,65 @@ async def on_message(message: cl.Message):
     except Exception as e:
         logger.error(f"[Chainlit] CosmosDB write failed: {e}")
 
+    # Run content safety evaluations and show in debug accordion
+    safety_results = {}
+    if CONTENT_SAFETY_ENABLED and raw_chunks:
+        try:
+            context = "\n\n".join(c.get("content", "") for c in raw_chunks)
+            safety_results = await run_all_evaluations(
+                query=user_text, answer=answer, context=context
+            )
+        except Exception as e:
+            logger.error(f"[Chainlit] Content safety evaluation failed: {e}")
+
+    # --- Debug Accordion: Content Safety ---
+    safety_step = cl.Step(name="Content Safety", type="tool")
+    safety_step.parent_id = msg.id
+    if not CONTENT_SAFETY_ENABLED:
+        safety_step.output = "Content safety evaluations are **disabled**.\n\nSet `CONTENT_SAFETY_ENABLED=true` to enable groundedness and harmful content checks."
+    elif not raw_chunks:
+        safety_step.output = "No retrieved chunks — content safety evaluation skipped."
+    elif not safety_results:
+        safety_step.output = "Content safety evaluation failed or returned no results."
+    else:
+        groundedness_score = safety_results.get("groundedness_score", "N/A")
+        groundedness_reason = safety_results.get("groundedness_reason", "N/A")
+        violence = safety_results.get("violence", "N/A")
+        sexual = safety_results.get("sexual", "N/A")
+        self_harm = safety_results.get("self_harm", "N/A")
+        hate_unfairness = safety_results.get("hate_unfairness", "N/A")
+
+        safety_step.output = (
+            "### Groundedness\n\n"
+            "| Metric | Value |\n"
+            "|--------|-------|\n"
+            f"| **Score** | `{groundedness_score}` / 5 |\n"
+            f"| **Reason** | {groundedness_reason} |\n\n"
+            "### Harmful Content Detection\n\n"
+            "| Category | Severity |\n"
+            "|----------|----------|\n"
+            f"| **Violence** | `{violence}` |\n"
+            f"| **Sexual** | `{sexual}` |\n"
+            f"| **Self-Harm** | `{self_harm}` |\n"
+            f"| **Hate/Unfairness** | `{hate_unfairness}` |"
+        )
+    await safety_step.send()
+
+    # Save metrics to CosmosDB (token usage, groundedness, safety scores)
+    try:
+        metrics = get_metrics_store()
+        metrics.save_metrics(
+            conversation_id=conversation_id,
+            query=user_text,
+            model=model,
+            token_usage=token_usage,
+            content_safety=safety_results if safety_results else None,
+        )
+    except Exception as e:
+        logger.error(f"[Chainlit] Metrics save failed: {e}")
+
     logger.info(
         f"[Chainlit] Response sent: conversation={conversation_id}, "
-        f"model={model}, sources={len(sources)}, raw_chunks={len(raw_chunks)}"
+        f"model={model}, sources={len(sources)}, raw_chunks={len(raw_chunks)}, "
+        f"tokens={total_tokens}"
     )
