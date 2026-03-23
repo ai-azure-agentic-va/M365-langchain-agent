@@ -100,9 +100,8 @@ async def on_chat_start():
 
     await cl.Message(
         content=(
-            "Welcome to the **ETS Virtual Assistant**. You can ask questions to "
-            "quickly search the ETS Knowledge Base and find support information "
-            "from SharePoint and Azure Wiki content."
+            "Welcome to ETS Virtual Assistant. Ask a question to instantly search "
+            "our Knowledge Base and internal resources."
         ),
         author="assistant",
     ).send()
