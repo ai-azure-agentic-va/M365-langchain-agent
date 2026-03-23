@@ -176,16 +176,12 @@ async def messages(request: Request) -> Response:
         return Response(status_code=500, content="Internal server error")
 
 
-DEPLOY_TARGET = os.environ.get("DEPLOY_TARGET", "CONTAINER_APPS").upper().strip()
-
-
 @app.get("/health")
 async def health():
     """Health check for liveness probe."""
     return {
         "status": "healthy",
         "service": "m365-langchain-agent",
-        "deploy_target": DEPLOY_TARGET,
     }
 
 
@@ -195,7 +191,6 @@ async def readiness():
     return {
         "status": "ready",
         "service": "m365-langchain-agent",
-        "deploy_target": DEPLOY_TARGET,
     }
 
 
@@ -286,9 +281,8 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", "8080"))
     user_interface = os.environ.get("USER_INTERFACE", "BOT_SERVICE").upper().strip()
-    deploy_target = os.environ.get("DEPLOY_TARGET", "CONTAINER_APPS").upper().strip()
 
-    logger.info(f"[App] DEPLOY_TARGET={deploy_target}, USER_INTERFACE={user_interface}")
+    logger.info(f"[App] USER_INTERFACE={user_interface}")
 
     if user_interface == "CHAINLIT_UI":
         logger.info(f"[App] Starting Chainlit UI on port {port}")

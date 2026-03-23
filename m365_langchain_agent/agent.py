@@ -72,6 +72,10 @@ Disambiguation rules:
 - If the question clearly targets a specific topic or document (e.g. "payments STTM"), answer directly from the matching document without asking.
 - If there is only one source document, answer directly.
 
+Greeting rules:
+- If the user greeting is generic (for example, "hi", "hello", or "hey") and no specific information is being requested, do not use the retrieved documents. Instead respond with: "Hello! I'm the ETS Virtual Assistant. How can I help you today?"
+- If the greeting includes a question (e.g. "Hi, what is the refund policy?"), answer the question normally using the documents.
+
 Keep answers concise, well-structured, and focused on the question asked.
 Use markdown formatting (bold, bullet points, headers) where it improves readability."""
 
@@ -138,7 +142,7 @@ def _deduplicate_sources(documents: List[Dict]) -> List[Dict]:
 def _normalize_source_url(url: str, source_type: str) -> str:
     """Normalize source URLs — convert ADLS blob URLs to original source paths.
 
-    If the URL is an ADLS blob path (from ingestion before sidecar fix),
+    If the URL is an ADLS blob path from ingestion,
     extract a clean relative path. If it's already a proper SharePoint/wiki URL,
     return as-is.
     """

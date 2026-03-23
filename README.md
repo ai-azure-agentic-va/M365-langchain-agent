@@ -1,10 +1,10 @@
 # M365 LangChain Agent
 
-Enterprise RAG agent for Microsoft 365. Answers employee questions from the internal knowledge base with citation-backed responses, deployed as a single container on AKS or Azure Container Apps.
+Enterprise RAG agent for Microsoft 365. Answers employee questions from the internal knowledge base with citation-backed responses, deployed as a single container on Azure Container Apps.
 
 **Stack:** Python 3.10 | LangChain | Azure Bot Service | CosmosDB | Azure AI Search | Azure OpenAI (GPT-4.1)
 
-**Architecture:** Single container — **1 pod**, no Redis/Postgres, no LangGraph. CosmosDB handles conversation state.
+**Architecture:** Single container — **1 replica**, no Redis/Postgres, no LangGraph. CosmosDB handles conversation state.
 
 > Full architecture with C4 diagrams: **[ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 
@@ -20,9 +20,6 @@ Enterprise RAG agent for Microsoft 365. Answers employee questions from the inte
 - [Debug Panel](#debug-panel)
 - [RAG Pipeline — How It Works](#rag-pipeline--how-it-works)
 - [Deployment](#deployment)
-  - [Option 1: Full AKS (zero-to-production)](#option-1-full-aks-deployment-zero-to-production)
-  - [Option 2: Azure Container Apps](#option-2-azure-container-apps)
-  - [Option 3: Manual AKS](#option-3-manual-aks-deployment)
 - [Feature Flags](#feature-flags)
 - [Environment Variables](#environment-variables)
 - [Project Structure](#project-structure)
@@ -53,7 +50,7 @@ USER_INTERFACE=CHAINLIT_UI python app.py
 
 # 5. Verify
 curl http://localhost:8080/health
-# {"status":"healthy","service":"m365-langchain-agent","deploy_target":"CONTAINER_APPS"}
+# {"status":"healthy","service":"m365-langchain-agent"}
 ```
 
 ---
@@ -222,46 +219,13 @@ The agent normalizes source URLs from the ingestion pipeline. ADLS blob URLs are
 
 ## Deployment
 
-### Option 1: Full AKS Deployment (zero-to-production)
+### Azure Container Apps
 
-**One script** provisions ALL Azure resources from scratch and deploys the agent. No manual portal steps.
-
-```bash
-chmod +x deploy-aks.sh
-./deploy-aks.sh
-```
-
-**Resources created (8 phases):**
-
-| Phase | Resources |
-|-------|-----------|
-| **1. Foundation** | Resource Group, ACR (Basic), AKS (AGIC, autoscaler 2-5 nodes, DS2_v2) |
-| **2. AI Services** | Azure OpenAI (GPT-4.1 + text-embedding-3-small), AI Search (Standard), Search Index (13-field schema + vector + semantic config) |
-| **3. Data & Identity** | CosmosDB (NoSQL, serverless), User-Assigned Managed Identity |
-| **4. HTTPS** | Application Gateway TLS cert, DNS label, FQDN |
-| **5. Docker & K8s** | AMD64 image build, ACR push, K8s Secret + ConfigMap + Deployment + Service + Ingress |
-| **6. Bot Service** | Bot registration (UserAssignedMSI), Teams + DirectLine + WebChat channels |
-| **7. AI Foundry** | Storage Account, Key Vault, Foundry Hub + Project, AOAI + Search connections, Agent registration |
-| **8. Validation** | Health checks, test query, summary output |
-
-After completion, the script outputs all endpoints and saves credentials to `.env.deployed`.
-
-**Customization:** Edit the variables at the top of `deploy-aks.sh`:
-```bash
-PROJECT_NAME="my-project"        # Prefix for all resource names
-LOCATION="eastus2"               # Azure region
-AKS_NODE_SIZE="Standard_DS2_v2"  # VM size
-AKS_MIN_NODES=2                  # Autoscaler min
-AKS_MAX_NODES=5                  # Autoscaler max
-```
-
-### Option 2: Azure Container Apps
-
-Simpler managed deployment — no K8s cluster required. Requires Azure resources (OpenAI, Search, CosmosDB) to already exist.
+Managed deployment — no cluster required. Requires Azure resources (OpenAI, Search, CosmosDB) to already exist.
 
 ```bash
-# Source credentials from deploy-aks.sh output or manual .env
-source .env.deployed
+# Configure your environment
+cp .env.example .env   # Fill in your Azure resource values
 
 # Deploy
 chmod +x deploy-container-apps.sh
@@ -275,24 +239,12 @@ chmod +x deploy-container-apps.sh
 4. Sets all env vars (OpenAI, Search, CosmosDB, Bot, LangSmith)
 5. Outputs the FQDN and runs a health check
 
-**Container Apps vs AKS:**
+### Manual Deployment
 
-| Aspect | Container Apps | AKS |
-|--------|---------------|-----|
-| **Complexity** | Managed, no K8s knowledge needed | Full Kubernetes control |
-| **Scaling** | 1-3 replicas (auto) | 2-5 nodes (cluster autoscaler) |
-| **Resources** | 0.5 CPU, 1 GiB memory | 250m-500m CPU, 512Mi-1Gi per pod |
-| **TLS** | Automatic (managed cert) | Self-signed or Let's Encrypt via App Gateway |
-| **Ingress** | Built-in external | AGIC (Application Gateway Ingress Controller) |
-| **Cost** | Pay-per-use (consumption) | Fixed node cost + autoscaler |
-| **Best for** | Dev/demo, small teams | Production, multi-agent, custom networking |
-
-### Option 3: Manual AKS Deployment
-
-For existing AKS clusters. Build, push, and deploy manually:
+Build and push the image manually, then update the Container App:
 
 ```bash
-# Build (AMD64 for AKS -- required, not optional)
+# Build (AMD64)
 docker buildx build --platform linux/amd64 \
   -t <acr-name>.azurecr.io/m365-langchain-agent:latest .
 
@@ -300,15 +252,11 @@ docker buildx build --platform linux/amd64 \
 az acr login --name <acr-name>
 docker push <acr-name>.azurecr.io/m365-langchain-agent:latest
 
-# Create secrets (one-time)
-kubectl create secret generic m365-langchain-agent-secrets -n agent \
-  --from-literal=AZURE_OPENAI_API_KEY=<key> \
-  --from-literal=AZURE_SEARCH_API_KEY=<key> \
-  --from-literal=AZURE_COSMOS_KEY=<key> \
-  --from-literal=LANGSMITH_API_KEY=<key>
-
-# Update k8s/deployment.yaml ConfigMap with your values, then:
-kubectl apply -f k8s/deployment.yaml
+# Update Container App
+az containerapp update \
+  --name m365-langchain-agent \
+  --resource-group <rg> \
+  --image <acr-name>.azurecr.io/m365-langchain-agent:latest
 ```
 
 ---
@@ -323,13 +271,6 @@ The agent behavior is controlled by environment variables that act as feature fl
 |-------|----------|
 | `BOT_SERVICE` (default) | FastAPI + Bot Framework adapter at `/api/messages`. No browser UI. |
 | `CHAINLIT_UI` | FastAPI + Chainlit mounted at `/chat/`. Root `/` redirects to `/chat/`. Settings panel + debug accordions enabled. |
-
-### `DEPLOY_TARGET`
-
-| Value | Behavior |
-|-------|----------|
-| `CONTAINER_APPS` (default) | Returned in `/health` and `/readiness` responses. No functional difference in code — purely informational for operational visibility. |
-| `KUBERNETES` | Same as above. Set by `deploy-aks.sh` to indicate K8s deployment. |
 
 ### `LANGCHAIN_TRACING_V2`
 
@@ -355,13 +296,13 @@ All configuration is externalized. See [.env.example](.env.example) for the full
 
 | Group | Variables | Required |
 |-------|-----------|----------|
-| **Azure OpenAI** | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION`, `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | Yes |
-| **Azure AI Search** | `AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_API_KEY`, `AZURE_SEARCH_INDEX_NAME`, `AZURE_SEARCH_SEMANTIC_CONFIG_NAME`, `AZURE_SEARCH_EMBEDDING_FIELD` | Yes |
-| **CosmosDB** | `AZURE_COSMOS_ENDPOINT`, `AZURE_COSMOS_KEY`, `AZURE_COSMOS_DATABASE`, `AZURE_COSMOS_CONTAINER` | Yes |
+| **Azure OpenAI** | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION`, `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | Yes |
+| **Azure AI Search** | `AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_INDEX_NAME`, `AZURE_SEARCH_SEMANTIC_CONFIG_NAME`, `AZURE_SEARCH_EMBEDDING_FIELD` | Yes |
+| **CosmosDB** | `AZURE_COSMOS_ENDPOINT`, `AZURE_COSMOS_DATABASE`, `AZURE_COSMOS_CONTAINER` | Yes |
 | **Bot Framework** | `BOT_APP_ID`, `BOT_APP_PASSWORD` (empty for MSI), `BOT_AUTH_TENANT` | Bot mode only |
 | **AI Foundry** | `AZURE_FOUNDRY_ENDPOINT`, `AZURE_FOUNDRY_SUBSCRIPTION_ID`, `AZURE_FOUNDRY_RESOURCE_GROUP`, `AZURE_FOUNDRY_WORKSPACE` | Foundry registration only |
 | **LangSmith** | `LANGSMITH_API_KEY`, `LANGCHAIN_TRACING_V2`, `LANGCHAIN_PROJECT` | Optional |
-| **Application** | `USER_INTERFACE`, `DEPLOY_TARGET`, `DEFAULT_TOP_K`, `DEFAULT_TEMPERATURE`, `LOG_LEVEL`, `PORT` | No (have defaults) |
+| **Application** | `USER_INTERFACE`, `SHOW_CHAT_SETTINGS`, `DEFAULT_TOP_K`, `DEFAULT_TEMPERATURE`, `LOG_LEVEL`, `PORT` | No (have defaults) |
 | **CosmosDB Tuning** | `COSMOS_TTL_SECONDS` (default: 86400), `COSMOS_MAX_MESSAGES` (default: 20) | No |
 
 ---
@@ -383,7 +324,6 @@ m365-langchain-agent/
 │       └── search.py          # Azure AI Search hybrid client (keyword + vector + semantic)
 ├── scripts/
 │   └── register_foundry_agent.py   # CLI wrapper for foundry_register.py
-├── deploy-aks.sh              # Zero-to-production: provisions ALL Azure resources + deploys
 ├── deploy-container-apps.sh   # Container Apps deployment (resources must exist)
 ├── Dockerfile                 # Python 3.10-slim, single-stage
 ├── docs/
@@ -428,8 +368,6 @@ python scripts/register_foundry_agent.py --delete <agent-id>
 3. POSTs to `{base_url}/assistants?api-version=2024-12-01-preview` with the agent definition
 4. The agent definition includes an `azure_ai_search` tool pointing to your index connection
 
-The `deploy-aks.sh` script handles this automatically in Phase 7 — it creates the Foundry Hub, Project, AOAI + Search connections, and registers the agent.
-
 ---
 
 ## Operational Commands
@@ -451,17 +389,14 @@ curl -X POST https://<fqdn>/test/query \
   -H "Content-Type: application/json" \
   -d '{"query": "your question", "model": "gpt-4.1-mini", "top_k": 10, "temperature": 0.5}'
 
-# Logs (K8s)
-kubectl logs -n agent -l app=m365-langchain-agent --tail=100 -f
-
-# Restart (K8s)
-kubectl rollout restart deployment m365-langchain-agent -n agent
-
-# Pod status
-kubectl get pods -n agent -l app=m365-langchain-agent
-
 # Logs (Container Apps)
 az containerapp logs show --name m365-langchain-agent --resource-group <rg> --follow
+
+# Restart (Container Apps)
+az containerapp revision restart --name m365-langchain-agent --resource-group <rg> --revision <revision-name>
+
+# Revisions
+az containerapp revision list --name m365-langchain-agent --resource-group <rg> -o table
 
 # Foundry agent management
 python scripts/register_foundry_agent.py          # Register
@@ -509,16 +444,15 @@ python scripts/register_foundry_agent.py --delete <agent-id>
 
 ## Prerequisites
 
-| Resource | Purpose | Provisioned by `deploy-aks.sh`? |
-|----------|---------|--------------------------------|
-| AKS Cluster or Container Apps | Container hosting | Yes (AKS with AGIC) |
-| Azure Container Registry | Docker image storage | Yes |
-| Azure OpenAI | LLM (GPT-4.1) + embeddings (text-embedding-3-small) | Yes |
-| Azure AI Search | Hybrid search index (keyword + vector + semantic) | Yes (index + semantic config) |
-| Azure Bot Service | Teams / WebChat / DirectLine channel routing | Yes (UserAssignedMSI) |
-| Azure CosmosDB | Conversation state persistence (serverless, 24h TTL) | Yes |
-| User-Assigned Managed Identity | Bot auth without client secrets | Yes |
-| AI Foundry Hub + Project | Agent registration for M365 Copilot publishing | Yes |
-| Key Vault + Storage Account | Foundry dependencies | Yes |
+| Resource | Purpose |
+|----------|---------|
+| Azure Container Apps | Container hosting |
+| Azure Container Registry | Docker image storage |
+| Azure OpenAI | LLM (GPT-4.1) + embeddings (text-embedding-3-small) |
+| Azure AI Search | Hybrid search index (keyword + vector + semantic) |
+| Azure Bot Service | Teams / WebChat / DirectLine channel routing |
+| Azure CosmosDB | Conversation state persistence (serverless, 24h TTL) |
+| User-Assigned Managed Identity | Bot auth without client secrets |
+| AI Foundry Hub + Project | Agent registration for M365 Copilot publishing (optional) |
 
-**Local development tools:** Python 3.10+, Docker Desktop, Azure CLI (`az`), `kubectl`
+**Local development tools:** Python 3.10+, Docker Desktop, Azure CLI (`az`)
