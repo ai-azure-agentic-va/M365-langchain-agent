@@ -259,6 +259,9 @@ async def on_message(message: cl.Message):
     sources = []
     raw_chunks = []
     full_prompt = ""
+    search_query = ""
+    original_query = ""
+    query_rewritten = False
 
     async for chunk in invoke_agent_stream(
         query=user_text,
@@ -273,6 +276,9 @@ async def on_message(message: cl.Message):
             sources = chunk["sources"]
             raw_chunks = chunk.get("raw_chunks", [])
             full_prompt = chunk.get("full_prompt", "")
+            search_query = chunk.get("search_query", "")
+            original_query = chunk.get("original_query", "")
+            query_rewritten = chunk.get("query_rewritten", False)
         else:
             await msg.stream_token(chunk)
 
@@ -297,6 +303,9 @@ async def on_message(message: cl.Message):
     # Collapsed by default — click to expand. In prod: SHOW_DEBUG_PANELS=false — hidden.
     if SHOW_DEBUG_PANELS and raw_chunks:
         index_name = os.environ.get("AZURE_SEARCH_INDEX_NAME", "N/A")
+        search_endpoint = os.environ.get("AZURE_SEARCH_ENDPOINT", "N/A")
+        semantic_config = os.environ.get("AZURE_SEARCH_SEMANTIC_CONFIG_NAME", "")
+        embedding_model = os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small")
         prompt_type = "Custom" if system_prompt != SYSTEM_PROMPT else "Default"
 
         def _to_multiline_html(text: str, limit: int = None) -> str:
@@ -304,6 +313,35 @@ async def on_message(message: cl.Message):
             if limit is not None:
                 safe = safe[:limit]
             return safe.replace("\n", "<br>")
+
+        # Build search query content
+        search_parts = []
+        search_parts.append(f"<b>Original Query:</b> {escape(original_query or user_text)}<br>")
+        if query_rewritten:
+            search_parts.append(f"<b>Rewritten Query:</b> {escape(search_query)}<br>")
+            search_parts.append("<b>Query Rewritten:</b> Yes (conversation context used)<br>")
+        else:
+            search_parts.append("<b>Query Rewritten:</b> No (standalone query)<br>")
+        search_parts.append("<hr>")
+        search_parts.append(f"<b>Search Endpoint:</b> {escape(search_endpoint)}<br>")
+        search_parts.append(f"<b>Index:</b> {escape(index_name)}<br>")
+        search_parts.append(f"<b>Top K:</b> {top_k}<br>")
+        search_parts.append(f"<b>Chunk Size:</b> 1024 tokens (200 overlap)<br>")
+        search_parts.append("<hr>")
+        search_parts.append("<b>Hybrid Search Components:</b><br>")
+        search_parts.append(f'&nbsp;&nbsp;1. <b>Keyword (BM25):</b> search_text = "{escape(search_query or user_text)}"<br>')
+        search_parts.append(f"&nbsp;&nbsp;2. <b>Vector (HNSW Cosine):</b> 1536d embedding via {escape(embedding_model)}<br>")
+        if semantic_config:
+            search_parts.append(f'&nbsp;&nbsp;3. <b>Semantic Reranker:</b> config = "{escape(semantic_config)}"<br>')
+        else:
+            search_parts.append("&nbsp;&nbsp;3. <b>Semantic Reranker:</b> DISABLED (no config set)<br>")
+        search_parts.append("<hr>")
+        search_parts.append(f"<b>Results Returned:</b> {len(raw_chunks)} chunks<br>")
+        if raw_chunks:
+            top_score = max((c.get("reranker_score") or c.get("score", 0)) for c in raw_chunks)
+            min_score = min((c.get("reranker_score") or c.get("score", 0)) for c in raw_chunks)
+            search_parts.append(f"<b>Score Range:</b> {min_score:.4f} — {top_score:.4f}<br>")
+        search_html = "".join(search_parts)
 
         # Build chunks content
         chunk_parts = []
@@ -349,7 +387,8 @@ async def on_message(message: cl.Message):
 
         accordion_msg = (
             '<div class="debug-accordion-group">'
-            f'<details class="debug-accordion"><summary class="debug-accordion-summary">Used Retrieved Chunks ({len(raw_chunks)})</summary><div class="debug-accordion-body">{chunks_html}</div></details>'
+            f'<details class="debug-accordion"><summary class="debug-accordion-summary">Search Query (AI Search)</summary><div class="debug-accordion-body">{search_html}</div></details>'
+            f'<details class="debug-accordion"><summary class="debug-accordion-summary">Retrieved Chunks ({len(raw_chunks)})</summary><div class="debug-accordion-body">{chunks_html}</div></details>'
             f'<details class="debug-accordion"><summary class="debug-accordion-summary">Full LLM Prompt</summary><div class="debug-accordion-body">{prompt_html}</div></details>'
             f'<details class="debug-accordion"><summary class="debug-accordion-summary">Settings</summary><div class="debug-accordion-body">{settings_html}</div></details>'
             "</div>"

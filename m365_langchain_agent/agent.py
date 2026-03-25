@@ -79,6 +79,50 @@ Greeting rules:
 Keep answers concise, well-structured, and focused on the question asked.
 Use markdown formatting (bold, bullet points, headers) where it improves readability."""
 
+STTM_SYSTEM_PROMPT = os.environ.get("STTM_SYSTEM_PROMPT", """This question should be answered using the Source-to-Target Mapping (STTM) Excel workbooks. STTM (Source-to-Target Mapping) document describes data lineage across a data platform. There are typically two Excel workbooks.
+
+This first workbook describes how data moves across enterprise ingestion and transformation layers:
+Landing → RAW → INT → CUR.
+RAW to INT tabs describe field-level mappings, transformations, and standard metadata added during ingestion.
+INT to CUR tabs describe final transformations, renaming, derivations, filtering, and curation decisions.
+Presence flags (Y/N) indicate whether a field is propagated to the next layer.
+Transformation Logic columns explain how derived fields are created.
+PII/PCI flags indicate sensitive data handling requirements.
+Source System Table Information captures the path for Raw, INT and CUR for each table.
+
+The second workbook describes how curated data is moved from CUR to ASL (Azure Synapse Layer), which is the final serving layer consumed by downstream systems.
+Each row represents a single target attribute with full lineage.
+Source details include CUR file path, column name, data type, and constraints.
+Target details include ASL table, column, datatype, nullability, and PK indicators.
+Transformation logic is explicitly stated (e.g., Pass Through, Derived, ETL Generated, conditional logic).
+Common patterns include snapshot-date-based deduplication, PK validation, and ETL-generated metadata (LOAD_TS, LOAD_PROC_NM).
+Logic Type values define whether fields are pass-through, derived, lookup-based, or system-generated.
+Target Column Is PK, Target Column Is FK suggest if the field is a primary key or Foreign key.
+
+STTM workbooks are typically organized across multiple Excel tabs, often separated by but not limited to:
+Data hop (e.g., Landing→RAW, RAW→INT, INT→CUR, CUR→ASL), document Info, source system info, target tables path or schemas.
+
+When answering questions using STTM documents: identify the correct STTM workbook, identify the correct hop(s) and relevant tabs, retrieve and apply the appropriate mapping rules.
+If the question requires end-to-end lineage, combine results across all applicable hops in the correct order.
+
+Citation rules:
+- Reference documents with numbered citations like [1], [2], etc.
+- Place citations inline, right after the relevant claim.
+- Never invent citations — only cite documents that are actually provided.
+
+When the knowledge base does not contain relevant information:
+- Say "The knowledge base does not contain enough information to answer that."
+- Do NOT make up an answer or hallucinate information.
+
+Keep answers precise and structured. Use markdown tables, bold, and bullet points for readability.""")
+
+STTM_TOP_K = int(os.environ.get("STTM_TOP_K", "10"))
+
+
+def _is_sttm_query(query: str) -> bool:
+    """Check if the query is STTM-related (case-insensitive)."""
+    return "sttm" in query.lower()
+
 
 def get_available_models() -> list:
     """Return list of available model deployment names from env or defaults."""
@@ -303,6 +347,13 @@ async def invoke_agent(
     effective_top_k = top_k if top_k is not None else DEFAULT_TOP_K
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
+    # STTM routing — specialized prompt + higher top_k for data lineage queries
+    is_sttm = _is_sttm_query(query)
+    if is_sttm and not system_prompt:
+        effective_prompt = STTM_SYSTEM_PROMPT
+        effective_top_k = max(effective_top_k, STTM_TOP_K)
+        logger.info(f"[Agent] STTM query detected — using STTM prompt, top_k={effective_top_k}")
+
     # 0. Rewrite query using conversation context (for follow-up questions)
     search_query = query
     if conversation_history:
@@ -311,7 +362,7 @@ async def invoke_agent(
     # 1. Retrieve documents from Azure AI Search (using rewritten query)
     search_client = get_search_client()
     raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
-    logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}) for: {search_query[:100]}")
+    logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}, sttm={is_sttm}) for: {search_query[:100]}")
 
     # 2. Deduplicate — group chunks from same document
     documents = _deduplicate_sources(raw_documents)
@@ -381,6 +432,13 @@ async def invoke_agent_stream(
     effective_top_k = top_k if top_k is not None else DEFAULT_TOP_K
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
+    # STTM routing — specialized prompt + higher top_k for data lineage queries
+    is_sttm = _is_sttm_query(query)
+    if is_sttm and not system_prompt:
+        effective_prompt = STTM_SYSTEM_PROMPT
+        effective_top_k = max(effective_top_k, STTM_TOP_K)
+        logger.info(f"[Agent] STTM query detected — using STTM prompt, top_k={effective_top_k}")
+
     search_query = query
     if conversation_history:
         search_query = await _rewrite_query_with_history(query, conversation_history, model_name)
@@ -429,6 +487,9 @@ Answer:"""
             "sources": cited_sources,
             "raw_chunks": raw_documents,
             "full_prompt": full_prompt,
+            "search_query": search_query,
+            "original_query": query,
+            "query_rewritten": search_query != query,
         }
     except Exception as e:
         logger.error(f"[Agent] LLM stream failed: {e}")
@@ -439,6 +500,9 @@ Answer:"""
             "sources": [],
             "raw_chunks": [],
             "full_prompt": full_prompt,
+            "search_query": search_query,
+            "original_query": query,
+            "query_rewritten": search_query != query,
         }
 
 
