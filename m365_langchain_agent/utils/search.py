@@ -5,7 +5,7 @@ Queries Azure AI Search index populated by the ingestion pipeline.
 Index schema:
     id              Edm.String      (key)
     chunk_content   Edm.String      searchable, en.microsoft analyzer
-    content_vector  Collection(Edm.Single)  1536d, HNSW cosine, retrievable
+    content_vector  Collection(Edm.Single)  3072d, HNSW cosine, retrievable
     document_title  Edm.String      searchable, filterable
     source_url      Edm.String      filterable
     source_type     Edm.String      filterable, facetable ("sharepoint" | "wiki")
@@ -57,6 +57,7 @@ class AzureSearchClient:
             azure_ad_token_provider=token_provider,
             azure_deployment=os.environ["AZURE_OPENAI_EMBEDDING_DEPLOYMENT"],
             api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-05-01-preview"),
+            dimensions=int(os.environ.get("AZURE_OPENAI_EMBEDDING_DIMENSIONS", "3072")),
         )
         self.semantic_config = os.environ.get("AZURE_SEARCH_SEMANTIC_CONFIG_NAME", "")
         self.vector_field = os.environ.get("AZURE_SEARCH_EMBEDDING_FIELD", "content_vector")
