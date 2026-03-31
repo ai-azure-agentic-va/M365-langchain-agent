@@ -15,6 +15,7 @@ import logging
 import os
 import uuid
 from html import escape
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -289,7 +290,8 @@ async def on_message(message: cl.Message):
         url = s.get("url", "")
         idx = s.get("index", 0)
         if url:
-            source_lines.append(f"[{idx}] [{title}]({url})")
+            safe_url = quote(url, safe="/:@?&#=")
+            source_lines.append(f"[{idx}] [{title}]({safe_url})")
         else:
             source_lines.append(f"[{idx}] {title}")
 
@@ -305,7 +307,7 @@ async def on_message(message: cl.Message):
         index_name = os.environ.get("AZURE_SEARCH_INDEX_NAME", "N/A")
         search_endpoint = os.environ.get("AZURE_SEARCH_ENDPOINT", "N/A")
         semantic_config = os.environ.get("AZURE_SEARCH_SEMANTIC_CONFIG_NAME", "")
-        embedding_model = os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-small")
+        embedding_model = os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
         prompt_type = "Custom" if system_prompt != SYSTEM_PROMPT else "Default"
 
         def _to_multiline_html(text: str, limit: int = None) -> str:
@@ -330,7 +332,7 @@ async def on_message(message: cl.Message):
         search_parts.append("<hr>")
         search_parts.append("<b>Hybrid Search Components:</b><br>")
         search_parts.append(f'&nbsp;&nbsp;1. <b>Keyword (BM25):</b> search_text = "{escape(search_query or user_text)}"<br>')
-        search_parts.append(f"&nbsp;&nbsp;2. <b>Vector (HNSW Cosine):</b> 1536d embedding via {escape(embedding_model)}<br>")
+        search_parts.append(f"&nbsp;&nbsp;2. <b>Vector (HNSW Cosine):</b> 3072d embedding via {escape(embedding_model)}<br>")
         if semantic_config:
             search_parts.append(f'&nbsp;&nbsp;3. <b>Semantic Reranker:</b> config = "{escape(semantic_config)}"<br>')
         else:
@@ -338,9 +340,11 @@ async def on_message(message: cl.Message):
         search_parts.append("<hr>")
         search_parts.append(f"<b>Results Returned:</b> {len(raw_chunks)} chunks<br>")
         if raw_chunks:
-            top_score = max((c.get("reranker_score") or c.get("score", 0)) for c in raw_chunks)
-            min_score = min((c.get("reranker_score") or c.get("score", 0)) for c in raw_chunks)
-            search_parts.append(f"<b>Score Range:</b> {min_score:.4f} — {top_score:.4f}<br>")
+            hybrid_scores = [c.get("score", 0) for c in raw_chunks]
+            search_parts.append(f"<b>Hybrid RRF Score Range:</b> {min(hybrid_scores):.4f} — {max(hybrid_scores):.4f}<br>")
+            rr_scores = [c.get("reranker_score") for c in raw_chunks if c.get("reranker_score")]
+            if rr_scores:
+                search_parts.append(f"<b>Semantic Relevance Range:</b> {min(rr_scores):.4f} — {max(rr_scores):.4f} (out of 4.0)<br>")
         search_html = "".join(search_parts)
 
         # Build chunks content
@@ -360,9 +364,9 @@ async def on_message(message: cl.Message):
             pii_redacted = chunk_data.get("pii_redacted", False)
 
             chunk_parts.append(f"<b>Chunk {i+1}: {title}</b><br>")
-            chunk_parts.append(f"Search Score: {search_score:.4f}<br>")
+            chunk_parts.append(f"Hybrid RRF Score: {search_score:.4f}<br>")
             if reranker_score:
-                chunk_parts.append(f"Reranker Score: {reranker_score:.4f}<br>")
+                chunk_parts.append(f"Semantic Relevance: {reranker_score:.4f} / 4.0<br>")
             chunk_parts.append(f"Source Type: {source_type}<br>")
             chunk_parts.append(f"Chunk: {chunk_idx} of {total_chunks_val}<br>")
             chunk_parts.append(f"PII Redacted: {pii_redacted}<br>")

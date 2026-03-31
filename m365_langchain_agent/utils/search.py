@@ -78,18 +78,23 @@ class AzureSearchClient:
         if not query or not query.strip():
             return []
 
+        # Over-retrieve candidates so the semantic reranker has a wider pool,
+        # then trim to top_k after reranking. This surfaces relevant documents
+        # that would otherwise be invisible at position > top_k.
+        retrieval_k = max(top_k * 3, 15) if self.semantic_config else top_k
+
         query_vector = self.embeddings.embed_query(query)
 
         vector_query = VectorizedQuery(
             vector=query_vector,
-            k=top_k,
+            k=retrieval_k,
             fields=self.vector_field,
         )
 
         search_kwargs = dict(
             search_text=query,
             vector_queries=[vector_query],
-            top=top_k,
+            top=retrieval_k,
             query_type="semantic" if self.semantic_config else "simple",
             semantic_configuration_name=self.semantic_config or None,
         )
@@ -115,8 +120,57 @@ class AzureSearchClient:
                 "pii_redacted": r.get("pii_redacted", False),
             })
 
+        # Trim to requested top_k after semantic reranking
+        docs = docs[:top_k]
+
         logger.info(
-            f"[Search] query='{query[:80]}...' hits={len(docs)} "
+            f"[Search] query='{query[:80]}...' hits={len(docs)} (retrieved={retrieval_k}, returned={top_k}) "
             f"index={os.environ.get('AZURE_SEARCH_INDEX_NAME')}"
         )
         return docs
+
+    def search_document_names(self, query: str, top: int = 50) -> list[str]:
+        """Lightweight query to discover ALL matching document names via faceting.
+
+        Uses ``select`` to retrieve only metadata (no chunk content) and
+        ``facets`` on ``file_name`` to aggregate unique document names.
+        Near-zero token cost — no embeddings or content transferred.
+
+        Returns:
+            Deduplicated list of file_name values matching the query.
+        """
+        if not query or not query.strip():
+            return []
+
+        search_kwargs: dict = dict(
+            search_text=query,
+            top=top,
+            select=["file_name", "document_title"],
+            facets=["file_name,count:50"],
+            query_type="semantic" if self.semantic_config else "simple",
+            semantic_configuration_name=self.semantic_config or None,
+        )
+        if self.semantic_config:
+            search_kwargs["semantic_query"] = query
+
+        try:
+            results = self.search_client.search(**search_kwargs)
+            facets = results.get_facets()
+            if facets and "file_name" in facets:
+                names = [f.value for f in facets["file_name"] if f.value]
+                logger.info(f"[Search] Document discovery: {len(names)} unique docs via facets")
+                return names
+
+            # Fallback: deduplicate from result rows
+            seen: set[str] = set()
+            names: list[str] = []
+            for r in results:
+                name = r.get("file_name") or r.get("document_title")
+                if name and name not in seen:
+                    seen.add(name)
+                    names.append(name)
+            logger.info(f"[Search] Document discovery: {len(names)} unique docs (fallback)")
+            return names
+        except Exception as e:
+            logger.warning(f"[Search] Document discovery failed: {e}")
+            return []

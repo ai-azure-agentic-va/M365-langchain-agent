@@ -11,6 +11,7 @@ import logging
 import os
 import re
 from typing import List, Dict, Optional, TypedDict
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -76,6 +77,10 @@ Greeting rules:
 - If the user greeting is generic (for example, "hi", "hello", or "hey") and no specific information is being requested, do not use the retrieved documents. Instead respond with: "Hello! I'm the ETS Virtual Assistant. How can I help you today?"
 - If the greeting includes a question (e.g. "Hi, what is the refund policy?"), answer the question normally using the documents.
 
+When listing documents for disambiguation, note that additional relevant documents may exist beyond what was retrieved. Encourage the user to ask about a specific document by name if they don't see the one they need.
+
+Do not summarize or recap information you have already presented in the same answer.
+
 Keep answers concise, well-structured, and focused on the question asked.
 Use markdown formatting (bold, bullet points, headers) where it improves readability."""
 
@@ -114,14 +119,30 @@ When the knowledge base does not contain relevant information:
 - Say "The knowledge base does not contain enough information to answer that."
 - Do NOT make up an answer or hallucinate information.
 
-Keep answers precise and structured. Use markdown tables, bold, and bullet points for readability.""")
+Keep answers precise and structured. Use markdown tables, bold, and bullet points for readability.
 
-STTM_TOP_K = int(os.environ.get("STTM_TOP_K", "10"))
+Output rules:
+- Present lineage in a SINGLE pass — do not repeat information.
+- If you show a table or hop-by-hop breakdown, do NOT follow it with a prose summary of the same data.
+- End with caveats or notes if needed, not a recap.
+- Prefer a single end-to-end markdown table over separate hop descriptions followed by a combined view.
+- Only add explanatory prose when transformation logic is complex and needs clarification.""")
+
+STTM_TOP_K = int(os.environ.get("STTM_TOP_K", "20"))
+
+
+_STTM_KEYWORDS = frozenset({
+    "sttm", "lineage", "source to target", "source-to-target",
+    "raw to int", "int to cur", "cur to asl", "landing to raw",
+    "data mapping", "field mapping", "column mapping",
+    "hop", "transformation logic",
+})
 
 
 def _is_sttm_query(query: str) -> bool:
     """Check if the query is STTM-related (case-insensitive)."""
-    return "sttm" in query.lower()
+    q = query.lower()
+    return any(kw in q for kw in _STTM_KEYWORDS)
 
 
 def get_available_models() -> list:
@@ -137,7 +158,7 @@ def get_available_models() -> list:
     return defaults
 
 
-DEFAULT_TOP_K = int(os.environ.get("DEFAULT_TOP_K", "5"))
+DEFAULT_TOP_K = int(os.environ.get("DEFAULT_TOP_K", "10"))
 DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", "0.2"))
 DEFAULT_MODEL = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
 
@@ -183,31 +204,46 @@ def _deduplicate_sources(documents: List[Dict]) -> List[Dict]:
     return list(seen.values())
 
 
-def _normalize_source_url(url: str, source_type: str) -> str:
-    """Normalize source URLs — convert ADLS blob URLs to original source paths.
+SHAREPOINT_BASE_URL = os.environ.get("SHAREPOINT_BASE_URL", "")
+WIKI_BASE_URL = os.environ.get("WIKI_BASE_URL", "")
 
-    If the URL is an ADLS blob path from ingestion,
-    extract a clean relative path. If it's already a proper SharePoint/wiki URL,
-    return as-is.
+
+def _normalize_source_url(url: str, source_type: str) -> str:
+    """Normalize source URLs — convert ADLS blob URLs to clickable original-source links.
+
+    Handles three cases:
+    1. Already a proper HTTP URL (not blob storage) — return as-is
+    2. ADLS blob URL — extract relative path, reconstruct using base URL + source_type
+    3. Relative path — reconstruct using base URL + source_type
     """
     if not url:
         return ""
     # Already a proper HTTP URL (SharePoint, wiki, etc.) — keep as-is
     if url.startswith("http") and ".blob.core.windows.net" not in url:
         return url
-    # ADLS blob URL — extract the meaningful path after the container
+
+    # Extract relative path from ADLS blob URL
+    relative_path = url
     if ".blob.core.windows.net" in url:
-        # Pattern: https://<account>.blob.core.windows.net/<container>/<path>
         parts = url.split(".blob.core.windows.net/", 1)
         if len(parts) == 2:
             blob_path = parts[1]
             # Strip container prefix (e.g. "raw-documents/")
             segments = blob_path.split("/", 1)
-            if len(segments) == 2:
-                return segments[1]  # Return relative path without container
-            return blob_path
-    # Relative SharePoint path (e.g. /sites/...) — keep as-is
-    return url
+            relative_path = segments[1] if len(segments) == 2 else blob_path
+
+    # Reconstruct clickable URL based on source_type (or infer from path)
+    st = source_type.lower() if source_type else ""
+    is_sharepoint = st == "sharepoint" or "sharepoint" in relative_path.lower()
+    is_wiki = st == "wiki" or "wiki" in relative_path.lower()
+
+    if is_sharepoint and SHAREPOINT_BASE_URL:
+        return f"{SHAREPOINT_BASE_URL}/{quote(relative_path, safe='/')}"
+    if is_wiki and WIKI_BASE_URL:
+        return f"{WIKI_BASE_URL}/{quote(relative_path, safe='/')}"
+
+    # Fallback: URL-encode the relative path so spaces don't break markdown links
+    return quote(relative_path, safe="/")
 
 
 def _build_sources(documents: List[Dict]) -> List[Source]:
@@ -297,8 +333,15 @@ def _get_unique_source_names(documents: List[Dict]) -> List[str]:
     return names
 
 
-def _format_context(documents: List[Dict]) -> str:
-    """Format retrieved documents into numbered context for the LLM."""
+def _format_context(documents: List[Dict], all_document_names: List[str] = None) -> str:
+    """Format retrieved documents into numbered context for the LLM.
+
+    Args:
+        documents: Deduplicated search results with content.
+        all_document_names: Optional complete list of matching document names
+            from facet-based discovery. When provided, the disambiguation hint
+            includes ALL matching docs, not just the retrieved subset.
+    """
     if not documents:
         return "No documents found."
 
@@ -306,10 +349,18 @@ def _format_context(documents: List[Dict]) -> str:
     unique_sources = _get_unique_source_names(documents)
     hint = ""
     if len(unique_sources) > 1:
-        source_list = ", ".join(f'"{s}"' for s in unique_sources)
+        # Use the full facet-based list if available; fall back to retrieved set
+        display_names = all_document_names if all_document_names else unique_sources
+        source_list = ", ".join(f'"{s}"' for s in display_names)
+        extra = ""
+        if all_document_names and len(all_document_names) > len(unique_sources):
+            extra = (
+                f" (Note: {len(all_document_names)} matching documents found in total; "
+                f"detailed content was retrieved from {len(unique_sources)} of them.)"
+            )
         hint = (
-            f"NOTE: These documents come from {len(unique_sources)} distinct sources: "
-            f"{source_list}. If the user's question is ambiguous about which source "
+            f"NOTE: These documents come from multiple distinct sources: "
+            f"{source_list}.{extra} If the user's question is ambiguous about which source "
             f"they mean, ask them to clarify before answering.\n\n"
         )
 
@@ -368,8 +419,20 @@ async def invoke_agent(
     documents = _deduplicate_sources(raw_documents)
     logger.info(f"[Agent] After dedup: {len(documents)} unique sources")
 
+    # 2b. Document discovery — get full list of matching doc names via faceting
+    #     so the LLM can list ALL relevant docs, not just the retrieved subset
+    all_doc_names = None
+    unique_sources = _get_unique_source_names(documents)
+    if len(unique_sources) > 1:
+        all_doc_names = search_client.search_document_names(search_query)
+        if all_doc_names:
+            logger.info(
+                f"[Agent] Document discovery: {len(all_doc_names)} total docs "
+                f"(retrieved {len(unique_sources)})"
+            )
+
     # 3. Build context and sources
-    context = _format_context(documents)
+    context = _format_context(documents, all_document_names=all_doc_names)
     sources = _build_sources(documents)
 
     # 4. Build message history for the LLM
@@ -446,7 +509,14 @@ async def invoke_agent_stream(
     search_client = get_search_client()
     raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
     documents = _deduplicate_sources(raw_documents)
-    context = _format_context(documents)
+
+    # Document discovery — full list of matching doc names via faceting
+    all_doc_names = None
+    unique_sources = _get_unique_source_names(documents)
+    if len(unique_sources) > 1:
+        all_doc_names = search_client.search_document_names(search_query)
+
+    context = _format_context(documents, all_document_names=all_doc_names)
     sources = _build_sources(documents)
 
     messages = [SystemMessage(content=effective_prompt)]
@@ -534,7 +604,8 @@ def format_sources_markdown(sources: List[Source]) -> str:
         score = s.get("reranker_score") or s.get("score", 0)
 
         if url:
-            link = f"[{title}]({url})"
+            safe_url = quote(url, safe="/:@?&#=")
+            link = f"[{title}]({safe_url})"
         else:
             link = f"**{title}**"
 
