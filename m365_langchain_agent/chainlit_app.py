@@ -11,6 +11,7 @@ Features:
 - Conversation history via CosmosDB
 """
 
+import json
 import logging
 import os
 import uuid
@@ -54,6 +55,11 @@ SHOW_CHAT_SETTINGS = os.environ.get("SHOW_CHAT_SETTINGS", "true").lower().strip(
 # Set SHOW_DEBUG_PANELS=false (default) for demo/prod — no debug output shown
 SHOW_DEBUG_PANELS = os.environ.get("SHOW_DEBUG_PANELS", "false").lower().strip() == "true"
 
+# Suggested follow-up prompts after each response
+# Set SHOW_SUGGESTED_PROMPTS=true (default) to show 3 clickable follow-up suggestions
+# Set SHOW_SUGGESTED_PROMPTS=false to disable
+SHOW_SUGGESTED_PROMPTS = os.environ.get("SHOW_SUGGESTED_PROMPTS", "true").lower().strip() == "true"
+
 # Greeting detection — respond directly without running the RAG pipeline
 _GREETING_WORDS = {"hello", "hi", "hey", "greetings", "good morning", "good afternoon", "good evening", "howdy", "hola"}
 _GREETING_RESPONSE = "Hello! I'm the **ETS Virtual Assistant**. How can I help you today?"
@@ -62,6 +68,7 @@ _THANKS_RESPONSE = "You're welcome! If you have any other questions, feel free t
 
 from m365_langchain_agent.agent import (
     invoke_agent_stream,
+    generate_suggested_prompts,
     get_available_models,
     SYSTEM_PROMPT,
     DEFAULT_TOP_K,
@@ -92,20 +99,53 @@ async def rename_author(author: str) -> str:
     return author
 
 
+@cl.set_starters
+async def set_starters():
+    """Card-style starter prompts shown in the empty chat state.
+
+    Reads from STARTER_PROMPTS env var (JSON array of {label, message} objects).
+    Returns None (no starters) if the env var is missing or empty.
+    """
+    raw = os.environ.get("STARTER_PROMPTS", "").strip()
+    if not raw:
+        return None
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("[Chainlit] STARTER_PROMPTS is not valid JSON — skipping starters")
+        return None
+    if not items:
+        return None
+    return [
+        cl.Starter(label=item["label"], message=item["message"])
+        for item in items
+        if item.get("label") and item.get("message")
+    ]
+
+
+@cl.action_callback("suggested_prompt")
+async def on_suggested_prompt(action: cl.Action):
+    """Handle clicks on suggested follow-up prompt chips.
+
+    Sends the suggestion as a new user message and processes it
+    through the normal RAG pipeline via on_message().
+    """
+    # Create a Message object that mimics a real user message
+    prompt = action.payload.get("prompt", "")
+    if not prompt:
+        return
+    user_msg = cl.Message(content=prompt, author="user")
+    await user_msg.send()
+    # Process through the normal handler
+    await on_message(user_msg)
+
+
 @cl.on_chat_start
 async def on_chat_start():
     """Initialize a new conversation session with configurable settings."""
     conversation_id = f"chainlit-{uuid.uuid4().hex[:12]}"
     cl.user_session.set("conversation_id", conversation_id)
     logger.info(f"[Chainlit] New session: conversation_id={conversation_id}")
-
-    await cl.Message(
-        content=(
-            "Welcome to ETS Virtual Assistant. Ask a question to instantly search "
-            "our Knowledge Base and internal resources."
-        ),
-        author="assistant",
-    ).send()
 
     if SHOW_CHAT_SETTINGS:
         available_models = get_available_models()
@@ -295,7 +335,10 @@ async def on_message(message: cl.Message):
         else:
             source_lines.append(f"[{idx}] {title}")
 
-    if source_lines:
+    # Only append Sources block if the LLM answer doesn't already list citations
+    answer_lower = answer.lower()
+    has_citation_section = "citations:" in answer_lower or "sources:" in answer_lower
+    if source_lines and not has_citation_section:
         await msg.stream_token("\n\n---\n**Sources:**\n" + "\n".join(source_lines))
 
     await msg.update()
@@ -415,3 +458,32 @@ async def on_message(message: cl.Message):
         f"[Chainlit] Response sent: conversation={conversation_id}, "
         f"model={model}, sources={len(sources)}, raw_chunks={len(raw_chunks)}"
     )
+
+    # --- Suggested follow-up prompts ---
+    if SHOW_SUGGESTED_PROMPTS and answer and not answer.startswith("Sorry,"):
+        try:
+            suggestions = await generate_suggested_prompts(
+                query=user_text,
+                answer=answer,
+                conversation_history=history,
+                model_name=model if model != DEFAULT_MODEL else None,
+            )
+            if suggestions:
+                actions = [
+                    cl.Action(
+                        name="suggested_prompt",
+                        label=s,
+                        payload={"prompt": s},
+                        tooltip=f"Click to ask: {s}",
+                    )
+                    for s in suggestions[:3]
+                ]
+                suggestion_msg = cl.Message(
+                    content="**Want to explore further?** Click a suggestion below:",
+                    author="assistant",
+                    actions=actions,
+                )
+                await suggestion_msg.send()
+                logger.info(f"[Chainlit] Showed {len(suggestions)} suggested prompts")
+        except Exception as e:
+            logger.warning(f"[Chainlit] Suggested prompts failed: {e}")
