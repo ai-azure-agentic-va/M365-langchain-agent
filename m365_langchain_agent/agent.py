@@ -208,44 +208,6 @@ SHAREPOINT_BASE_URL = os.environ.get("SHAREPOINT_BASE_URL", "")
 WIKI_BASE_URL = os.environ.get("WIKI_BASE_URL", "")
 
 
-def _normalize_source_url(url: str, source_type: str) -> str:
-    """Normalize source URLs — convert ADLS blob URLs to clickable original-source links.
-
-    Handles three cases:
-    1. Already a proper HTTP URL (not blob storage) — return as-is
-    2. ADLS blob URL — extract relative path, reconstruct using base URL + source_type
-    3. Relative path — reconstruct using base URL + source_type
-    """
-    if not url:
-        return ""
-    # Already a proper HTTP URL (SharePoint, wiki, etc.) — keep as-is
-    if url.startswith("http") and ".blob.core.windows.net" not in url:
-        return url
-
-    # Extract relative path from ADLS blob URL
-    relative_path = url
-    if ".blob.core.windows.net" in url:
-        parts = url.split(".blob.core.windows.net/", 1)
-        if len(parts) == 2:
-            blob_path = parts[1]
-            # Strip container prefix (e.g. "raw-documents/")
-            segments = blob_path.split("/", 1)
-            relative_path = segments[1] if len(segments) == 2 else blob_path
-
-    # Reconstruct clickable URL based on source_type (or infer from path)
-    st = source_type.lower() if source_type else ""
-    is_sharepoint = st == "sharepoint" or "sharepoint" in relative_path.lower()
-    is_wiki = st == "wiki" or "wiki" in relative_path.lower()
-
-    if is_sharepoint and SHAREPOINT_BASE_URL:
-        return f"{SHAREPOINT_BASE_URL}/{quote(relative_path, safe='/')}"
-    if is_wiki and WIKI_BASE_URL:
-        return f"{WIKI_BASE_URL}/{quote(relative_path, safe='/')}"
-
-    # Fallback: URL-encode the relative path so spaces don't break markdown links
-    return quote(relative_path, safe="/")
-
-
 def _build_sources(documents: List[Dict]) -> List[Source]:
     """Convert raw search results into Source dicts with preview text."""
     sources = []
@@ -255,10 +217,12 @@ def _build_sources(documents: List[Dict]) -> List[Source]:
         if len(content) > 200:
             preview += "..."
 
+        raw_url = d.get("source_url", "")
+        safe_url = quote(raw_url, safe="/:@?&#=") if raw_url else ""
         sources.append(Source(
             index=i + 1,
             title=d.get("document_title") or d.get("file_name") or "Untitled",
-            url=_normalize_source_url(d.get("source_url", ""), d.get("source_type", "")),
+            url=safe_url,
             source_type=d.get("source_type", ""),
             file_name=d.get("file_name", ""),
             page_number=d.get("page_number", 0),
@@ -269,6 +233,66 @@ def _build_sources(documents: List[Dict]) -> List[Source]:
             preview=preview,
         ))
     return sources
+
+
+SUGGESTED_PROMPTS_PROMPT = """Based on the conversation so far, suggest exactly 3 short follow-up questions the user might want to ask next.
+
+Rules:
+- Each question must be self-contained (don't use pronouns like "it" or "that").
+- Questions should explore different angles: deeper detail, related topics, or comparisons.
+- Keep each question under 15 words.
+- Return ONLY 3 lines, one question per line. No numbering, no bullets, no extra text."""
+
+
+async def generate_suggested_prompts(
+    query: str,
+    answer: str,
+    conversation_history: Optional[List[Dict]] = None,
+    model_name: str = None,
+) -> List[str]:
+    """Generate 3 follow-up question suggestions based on the conversation.
+
+    Uses a lightweight LLM call (temperature=0.7 for variety) with minimal context
+    to keep cost low (~200 tokens total).
+
+    Returns:
+        List of 3 suggested follow-up questions, or empty list on failure.
+    """
+    # Build compact context: last exchange + current Q&A
+    context_parts = []
+    if conversation_history:
+        for turn in conversation_history[-2:]:
+            role = "User" if turn["role"] == "user" else "Assistant"
+            content = turn["content"][:200]
+            context_parts.append(f"{role}: {content}")
+
+    context_parts.append(f"User: {query}")
+    context_parts.append(f"Assistant: {answer[:500]}")
+    context_text = "\n".join(context_parts)
+
+    messages = [
+        SystemMessage(content=SUGGESTED_PROMPTS_PROMPT),
+        HumanMessage(content=f"Conversation:\n{context_text}\n\nSuggested follow-up questions:"),
+    ]
+
+    try:
+        # Prefer mini model for cost (~$0.0003/call); fall back to caller's model
+        suggestion_model = model_name or DEFAULT_MODEL
+        llm = _build_llm(temperature=0.7, model_name=suggestion_model)
+        response = await llm.ainvoke(messages)
+        lines = [line.strip() for line in response.content.strip().split("\n") if line.strip()]
+        # Take exactly 3, strip any numbering artifacts
+        suggestions = []
+        for line in lines[:3]:
+            # Remove leading "1.", "- ", "• " etc.
+            cleaned = line.lstrip("0123456789.-•) ").strip()
+            if cleaned:
+                suggestions.append(cleaned)
+        logger.info(f"[Agent] Generated {len(suggestions)} suggested prompts")
+        return suggestions
+    except Exception as e:
+        logger.warning(f"[Agent] Suggested prompts generation failed: {e}")
+        return []
 
 
 QUERY_REWRITE_PROMPT = """Given the conversation history and a follow-up question, rewrite the follow-up question as a standalone search query that captures the full intent.

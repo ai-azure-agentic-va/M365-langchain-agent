@@ -67,12 +67,60 @@ button[aria-label*="negative" i] {
     display: none !important;
 }
 
-/* Hide non-primary action icons in common message toolbars (keeps first button such as copy). */
-.step .buttons button:not(:first-child),
-[class*="message-actions"] button:not(:first-child),
-[class*="MessageActions"] button:not(:first-child),
-[data-testid*="action"] button:not(:first-child) {
+/* Hide all message action toolbar buttons globally (copy/feedback/etc.). */
+.step .buttons button,
+[class*="message-actions"] button,
+[class*="MessageActions"] button,
+[data-testid*="action"] button {
     display: none !important;
+}
+
+/* ===== Starter Prompt Cards ===== */
+.cl-starter-prompts-container {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 6px 0 8px;
+}
+
+.cl-starter-prompt-card {
+    width: 100%;
+    min-height: 0;
+    padding: 10px 14px;
+    border: 1px solid #d0d5dd !important;
+    border-radius: 12px !important;
+    background: #f8fafc !important;
+    color: #344054 !important;
+    text-align: left !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    line-height: 1.35 !important;
+    cursor: pointer !important;
+    white-space: normal !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 10px !important;
+    box-shadow: none;
+    transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.cl-starter-prompt-card:hover {
+    border-color: #98a2b3 !important;
+    background: #eff8ff !important;
+    color: #1570ef !important;
+}
+
+.cl-starter-prompt-card:focus-visible {
+    outline: 2px solid #1570ef !important;
+    outline-offset: 2px !important;
+}
+
+@media (max-width: 768px) {
+    .cl-starter-prompt-card {
+        padding: 12px 16px;
+    }
 }
 
 /* --- Debug Accordion Styles --- */
@@ -171,6 +219,104 @@ button[aria-label*="negative" i] {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+/* ===== Suggested Follow-Up Prompt Chips ===== */
+
+.suggestion-chips-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 4px 0 0;
+}
+
+.suggestion-chips-label {
+    font-size: 14px;
+    font-weight: 600;
+    color: #344054;
+    margin-bottom: 2px;
+}
+
+.suggestion-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid #d0d5dd;
+    border-radius: 12px;
+    background: #f8fafc;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.suggestion-chip:hover {
+    border-color: #98a2b3;
+    background: #eff8ff;
+}
+
+.suggestion-chip-text {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.35;
+    color: #344054;
+    cursor: pointer;
+    user-select: none;
+}
+
+.suggestion-chip-text:hover {
+    color: #1570ef;
+}
+
+.suggestion-chip-copy {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid #e4e7ec;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #667085;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.suggestion-chip-copy:hover {
+    background: #f2f4f7;
+    color: #344054;
+    border-color: #d0d5dd;
+}
+
+.suggestion-chip-copy.copied {
+    color: #12b76a;
+    border-color: #12b76a;
+}
+
+/* Hide all message-level action buttons for Explore Further blocks. */
+.suggestion-step .buttons button,
+.suggestion-step [class*="message-actions"] button,
+.suggestion-step [class*="MessageActions"] button,
+.suggestion-step [data-testid*="action"] button {
+    display: none !important;
+}
+
+/* Remove copy actions globally (they copy raw HTML for custom chips). */
+button[aria-label*="copy" i],
+button[title*="copy" i],
+button[aria-label*="clipboard" i],
+button[title*="clipboard" i],
+[data-testid*="copy" i],
+[class*="copy" i] button {
+    display: none !important;
+}
+
+/* Mobile: stack chips full-width */
+@media (max-width: 768px) {
+    .suggestion-chip {
+        padding: 12px 16px;
+    }
 }
 
 /* Make the assistant logo fill the avatar slot more cleanly. */

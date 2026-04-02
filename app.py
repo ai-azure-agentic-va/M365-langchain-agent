@@ -245,6 +245,7 @@ async def test_query(request: Request):
         }
         results["answer"] = answer
         results["sources"] = sources
+        results["raw_chunks"] = agent_result.get("raw_chunks", [])
     except Exception as e:
         results["steps"]["agent"] = {"status": "error", "error": str(e)}
         results["answer"] = None
