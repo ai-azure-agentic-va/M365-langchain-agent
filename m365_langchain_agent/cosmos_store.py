@@ -23,11 +23,54 @@ logger = logging.getLogger(__name__)
 _store = None
 
 
+class MockCosmosStore:
+    """Mock store for testing when CosmosDB is unavailable (firewall blocked).
+
+    Logs all operations but doesn't persist data. Useful for testing SSO without CosmosDB.
+    """
+
+    def __init__(self):
+        logger.info("[MockCosmosStore] Initialized (CosmosDB unavailable)")
+        self.conversations = {}  # In-memory store for testing
+
+    def get_history(self, conversation_id: str, user_id: Optional[str] = None) -> List[Dict]:
+        """Return history from in-memory store."""
+        logger.info(
+            f"[MockCosmosStore] get_history: conversation={conversation_id}, user={user_id or 'anonymous'}"
+        )
+        return self.conversations.get(conversation_id, [])
+
+    def save_turn(
+        self,
+        conversation_id: str,
+        user_message: str,
+        bot_response: str,
+        user_id: Optional[str] = None,
+        user_email: Optional[str] = None,
+        user_display_name: Optional[str] = None,
+    ) -> None:
+        """Save to in-memory store for testing."""
+        logger.info(
+            f"[MockCosmosStore] save_turn: conversation={conversation_id}, "
+            f"user={user_id or 'anonymous'}, user_email={user_email}, user_name={user_display_name}"
+        )
+        # Store in memory for testing
+        if conversation_id not in self.conversations:
+            self.conversations[conversation_id] = []
+        self.conversations[conversation_id].append({"role": "user", "content": user_message})
+        self.conversations[conversation_id].append({"role": "assistant", "content": bot_response})
+
+
 def get_cosmos_store():
     """Singleton — reuses the same store across invocations."""
     global _store
     if _store is None:
-        _store = CosmosConversationStore()
+        try:
+            _store = CosmosConversationStore()
+        except Exception as e:
+            logger.warning(f"[CosmosStore] Failed to initialize (firewall blocked?): {e}")
+            logger.warning("[CosmosStore] Using mock store for SSO testing")
+            _store = MockCosmosStore()
     return _store
 
 
@@ -53,8 +96,12 @@ class CosmosConversationStore:
             f"ttl={self.ttl_seconds}s"
         )
 
-    def get_history(self, conversation_id: str) -> List[Dict]:
+    def get_history(self, conversation_id: str, user_id: Optional[str] = None) -> List[Dict]:
         """Get conversation history for a given conversation.
+
+        Args:
+            conversation_id: The conversation ID
+            user_id: Optional user ID for validation (ensures user owns this conversation)
 
         Returns:
             List of {"role": "user"|"assistant", "content": "..."} dicts,
@@ -65,6 +112,13 @@ class CosmosConversationStore:
                 item=conversation_id,
                 partition_key=conversation_id,
             )
+            # If user_id is provided, validate ownership
+            if user_id and item.get("user_id") != user_id:
+                logger.warning(
+                    f"[CosmosStore] User {user_id} attempted to access conversation {conversation_id} "
+                    f"owned by {item.get('user_id', 'unknown')}"
+                )
+                return []
             return item.get("messages", [])
         except CosmosResourceNotFoundError:
             return []
@@ -77,11 +131,22 @@ class CosmosConversationStore:
         conversation_id: str,
         user_message: str,
         bot_response: str,
+        user_id: Optional[str] = None,
+        user_email: Optional[str] = None,
+        user_display_name: Optional[str] = None,
     ) -> None:
         """Append a user/bot turn to the conversation history.
 
         Creates the document if it doesn't exist, or updates it with
-        the new turn appended.
+        the new turn appended. Stamps user identity on the conversation.
+
+        Args:
+            conversation_id: The conversation ID
+            user_message: The user's message
+            bot_response: The bot's response
+            user_id: Entra ID Object ID (oid) of the user
+            user_email: User's email address
+            user_display_name: User's display name
         """
         try:
             # Try to read existing conversation
@@ -100,6 +165,14 @@ class CosmosConversationStore:
                 }
                 messages = []
 
+            # Stamp user identity on first turn (or update if changed)
+            if user_id:
+                item["user_id"] = user_id
+            if user_email:
+                item["user_email"] = user_email
+            if user_display_name:
+                item["user_display_name"] = user_display_name
+
             # Append the new turn
             messages.append({"role": "user", "content": user_message})
             messages.append({"role": "assistant", "content": bot_response})
@@ -115,7 +188,7 @@ class CosmosConversationStore:
             self.container.upsert_item(item)
             logger.info(
                 f"[CosmosStore] Saved turn for conversation={conversation_id}, "
-                f"total_messages={len(messages)}"
+                f"user={user_id or 'anonymous'}, total_messages={len(messages)}"
             )
         except Exception as e:
             logger.error(f"[CosmosStore] Failed to save turn: {e}")

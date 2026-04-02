@@ -19,6 +19,8 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import RedirectResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from botbuilder.core import (
     BotFrameworkAdapter,
     BotFrameworkAdapterSettings,
@@ -277,6 +279,79 @@ async def root():
     }
 
 
+# ---------------------------------------------------------------------------
+# SSO / Authentication (Chainlit UI only)
+# ---------------------------------------------------------------------------
+
+@app.get("/auth/login")
+async def auth_login(request: Request):
+    """Initiate Entra ID SSO login flow."""
+    from m365_langchain_agent.auth import login_route
+    return login_route(request)
+
+
+@app.get("/auth/callback")
+async def auth_callback(request: Request):
+    """Handle OAuth callback from Entra ID."""
+    from m365_langchain_agent.auth import callback_route
+    return callback_route(request)
+
+
+@app.get("/auth/logout")
+async def auth_logout(request: Request):
+    """Logout and clear SSO session."""
+    from m365_langchain_agent.auth import logout_route
+    return logout_route(request)
+
+
+@app.get("/auth/error")
+async def auth_error(request: Request):
+    """Auth error page."""
+    message = request.query_params.get("message", "Authentication failed")
+    return Response(
+        content=f"<html><body><h1>Authentication Error</h1><p>{message}</p><p><a href='/auth/login'>Try again</a></p></body></html>",
+        media_type="text/html",
+    )
+
+
+# ---------------------------------------------------------------------------
+# SSO Middleware (protects /chat/ routes in Chainlit UI mode)
+# ---------------------------------------------------------------------------
+
+class SSOAuthMiddleware(BaseHTTPMiddleware):
+    """Middleware that enforces SSO authentication for Chainlit UI routes.
+
+    Checks for a valid session cookie on /chat/* requests.
+    Redirects to /auth/login if not authenticated.
+    Injects user identity as X-User-* headers for Chainlit's header_auth_callback.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # Only protect /chat/ routes (Chainlit UI)
+        if path.startswith("/chat/"):
+            from m365_langchain_agent.auth import get_user_from_request
+
+            user = get_user_from_request(request)
+
+            if not user:
+                # Not authenticated — redirect to login
+                # Preserve the original path for post-login redirect
+                return RedirectResponse(url=f"/auth/login?next={path}")
+
+            # Authenticated — inject user identity as custom headers for Chainlit
+            # Chainlit's header_auth_callback will read these
+            request.state.user = user  # Store in request state
+            request.scope["headers"].append((b"x-user-oid", user["oid"].encode()))
+            request.scope["headers"].append((b"x-user-name", user["name"].encode()))
+            request.scope["headers"].append((b"x-user-email", (user.get("email") or "").encode()))
+            request.scope["headers"].append((b"x-user-role", user["role"].encode()))
+
+        response = await call_next(request)
+        return response
+
+
 if __name__ == "__main__":
     import uvicorn
 
@@ -288,7 +363,14 @@ if __name__ == "__main__":
     if user_interface == "CHAINLIT_UI":
         logger.info(f"[App] Starting Chainlit UI on port {port}")
         from chainlit.utils import mount_chainlit
-        from fastapi.responses import RedirectResponse
+
+        # Add SSO middleware to protect /chat/ routes
+        enable_sso = os.environ.get("ENABLE_SSO", "true").lower().strip() == "true"
+        if enable_sso:
+            logger.info("[App] SSO enabled — adding authentication middleware")
+            app.add_middleware(SSOAuthMiddleware)
+        else:
+            logger.warning("[App] SSO disabled (ENABLE_SSO=false) — running without authentication")
 
         chainlit_target = os.path.join(
             os.path.dirname(__file__), "m365_langchain_agent", "chainlit_app.py"

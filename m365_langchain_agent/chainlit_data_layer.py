@@ -57,15 +57,30 @@ class CosmosDataLayer(BaseDataLayer):
     async def list_threads(
         self, pagination: Pagination, filters: ThreadFilter
     ) -> PaginatedResponse[ThreadDict]:
-        """List all conversation threads for the sidebar."""
+        """List conversation threads for the current user in the sidebar."""
         try:
             cosmos = get_cosmos_store()
-            query = "SELECT * FROM c ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
-            params = [{"name": "@limit", "value": pagination.first or 20}]
 
-            if pagination.cursor:
-                query = "SELECT * FROM c WHERE c.updated_at < @cursor ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
-                params.append({"name": "@cursor", "value": float(pagination.cursor)})
+            # Filter by user_id if provided in filters.userId
+            # If no userId filter, show all threads (backward compatibility for legacy data)
+            if filters.userId and filters.userId != "default-user":
+                query = "SELECT * FROM c WHERE c.user_id = @user_id ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
+                params = [
+                    {"name": "@user_id", "value": filters.userId},
+                    {"name": "@limit", "value": pagination.first or 20}
+                ]
+
+                if pagination.cursor:
+                    query = "SELECT * FROM c WHERE c.user_id = @user_id AND c.updated_at < @cursor ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
+                    params.append({"name": "@cursor", "value": float(pagination.cursor)})
+            else:
+                # Legacy: show all threads (for backward compatibility)
+                query = "SELECT * FROM c ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
+                params = [{"name": "@limit", "value": pagination.first or 20}]
+
+                if pagination.cursor:
+                    query = "SELECT * FROM c WHERE c.updated_at < @cursor ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
+                    params.append({"name": "@cursor", "value": float(pagination.cursor)})
 
             items = list(cosmos.container.query_items(
                 query=query,
@@ -101,12 +116,15 @@ class CosmosDataLayer(BaseDataLayer):
                         createdAt=_ts_to_iso(created + i),
                     ))
 
+                # Use the actual user_id from the conversation, or fall back to "default-user"
+                user_id = item.get("user_id", "default-user")
+
                 threads.append(ThreadDict(
                     id=item["id"],
                     createdAt=_ts_to_iso(item.get("created_at", time.time())),
                     name=first_user_msg,
-                    userId="default-user",
-                    userIdentifier="default-user",
+                    userId=user_id,
+                    userIdentifier=user_id,
                     tags=None,
                     metadata=None,
                     steps=steps,
@@ -149,12 +167,15 @@ class CosmosDataLayer(BaseDataLayer):
                     createdAt=_ts_to_iso(created + i),
                 ))
 
+            # Use the actual user_id from the conversation, or fall back to "default-user"
+            user_id = item.get("user_id", "default-user")
+
             return ThreadDict(
                 id=thread_id,
                 createdAt=_ts_to_iso(item.get("created_at", time.time())),
                 name=next((m["content"][:80] for m in messages if m["role"] == "user"), "Chat"),
-                userId="default-user",
-                userIdentifier="default-user",
+                userId=user_id,
+                userIdentifier=user_id,
                 tags=None,
                 metadata=None,
                 steps=steps,
@@ -165,7 +186,14 @@ class CosmosDataLayer(BaseDataLayer):
             return None
 
     async def get_thread_author(self, thread_id: str) -> str:
-        return "default-user"
+        """Return the actual user_id who owns this thread."""
+        try:
+            cosmos = get_cosmos_store()
+            item = cosmos.container.read_item(item=thread_id, partition_key=thread_id)
+            return item.get("user_id", "default-user")
+        except Exception as e:
+            logger.error(f"[DataLayer] get_thread_author failed for {thread_id}: {e}")
+            return "default-user"
 
     async def update_thread(
         self,
