@@ -1,0 +1,332 @@
+/* Hide the Logout menu item */
+[role="menuitem"]:has(svg.lucide-log-out),
+[role="menuitem"]:has(svg > path[d*="m16 17 5-5"]),
+[data-radix-collection-item]:last-child {
+    display: none !important;
+}
+
+/* Remove "LLMs can make mistakes..." watermark */
+.watermark {
+    display: none !important;
+}
+
+/* Hide the user avatar/menu button in top-right header. */
+[data-radix-popper-content-wrapper],
+button[aria-haspopup="menu"],
+header button:last-child,
+header > div > div:last-child > button,
+#header-user-button,
+.cl-user-button {
+    display: none !important;
+}
+
+/* Hide the theme toggle (sun/moon icon) in top-right. */
+button:has(svg.lucide-sun),
+button:has(svg.lucide-moon),
+button:has(svg.lucide-sun-moon),
+button[aria-label*="theme" i],
+button[aria-label*="Theme" i],
+button[aria-label*="dark" i],
+button[aria-label*="light" i],
+#theme-toggle,
+.cl-theme-toggle {
+    display: none !important;
+}
+
+/* =============================================
+   Hide feedback / like / dislike controls
+   Keep copy control visible.
+   ============================================= */
+
+/* Target by SVG path data (thumbs up & thumbs down icons) */
+button:has(svg path[d*="M7 10v12"]),
+button:has(svg path[d*="M17 14V2"]),
+button:has(svg path[d*="M14 9V5"]),
+button:has(svg path[d*="M7 22V12"]),
+button:has(svg path[d*="M17 2v10"]) {
+    display: none !important;
+}
+
+/* Target by aria-label patterns */
+button[aria-label*="like" i],
+button[aria-label*="dislike" i],
+button[aria-label*="feedback" i],
+button[aria-label*="thumb" i],
+button[aria-label*="upvote" i],
+button[aria-label*="downvote" i],
+button[aria-label*="positive" i],
+button[aria-label*="negative" i] {
+    display: none !important;
+}
+
+/* Target the entire feedback/action wrappers that are explicitly named feedback. */
+[class*="feedback"],
+[class*="Feedback"],
+[data-testid*="feedback"],
+[data-testid*="feedback"] {
+    display: none !important;
+}
+
+/* Hide all message action toolbar buttons globally (copy/feedback/etc.). */
+.step .buttons button,
+[class*="message-actions"] button,
+[class*="MessageActions"] button,
+[data-testid*="action"] button {
+    display: none !important;
+}
+
+/* ===== Starter Prompt Cards ===== */
+.cl-starter-prompts-container {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 6px 0 8px;
+}
+
+.cl-starter-prompt-card {
+    width: 100%;
+    min-height: 0;
+    padding: 10px 14px;
+    border: 1px solid #d0d5dd !important;
+    border-radius: 12px !important;
+    background: #f8fafc !important;
+    color: #344054 !important;
+    text-align: left !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    line-height: 1.35 !important;
+    cursor: pointer !important;
+    white-space: normal !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 10px !important;
+    box-shadow: none;
+    transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+
+.cl-starter-prompt-card:hover {
+    border-color: #98a2b3 !important;
+    background: #eff8ff !important;
+    color: #1570ef !important;
+}
+
+.cl-starter-prompt-card:focus-visible {
+    outline: 2px solid #1570ef !important;
+    outline-offset: 2px !important;
+}
+
+@media (max-width: 768px) {
+    .cl-starter-prompt-card {
+        padding: 12px 16px;
+    }
+}
+
+/* --- Debug Accordion Styles --- */
+.debug-accordion {
+    border: none;
+    border-radius: 0;
+    margin: 2px 0;
+    overflow: visible;
+    background: transparent;
+    box-shadow: none;
+}
+
+.debug-accordion + .debug-accordion {
+    margin-top: 2px;
+}
+
+.debug-accordion-group {
+    display: block;
+}
+
+.debug-accordion-summary {
+    cursor: pointer;
+    padding: 8px 4px;
+    font-weight: 600;
+    font-size: 14px;
+    color: #344054;
+    background: transparent;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    user-select: none;
+    transition: color 0.15s ease;
+}
+
+.debug-accordion-summary:hover {
+    color: #1d2939;
+}
+
+/* Custom arrow indicator */
+.debug-accordion-summary::before {
+    content: "▶";
+    font-size: 10px;
+    transition: transform 0.2s ease;
+    display: inline-block;
+}
+
+.debug-accordion[open] > .debug-accordion-summary::before {
+    transform: rotate(90deg);
+}
+
+/* Remove default browser arrow */
+.debug-accordion-summary::-webkit-details-marker {
+    display: none;
+}
+
+.debug-accordion-body {
+    padding: 8px 0 12px 18px;
+    font-size: 13px;
+    line-height: 1.6;
+    max-height: 400px;
+    overflow-y: auto;
+    background: transparent;
+}
+
+.debug-accordion-body pre,
+.debug-accordion-body code {
+    font-size: 12px;
+    background: #f2f4f7;
+    border-radius: 4px;
+    padding: 2px 4px;
+}
+
+.debug-accordion-body pre {
+    padding: 8px 12px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.debug-text-block {
+    font-size: 12px;
+    line-height: 1.45;
+    background: #f8fafc;
+    border: 1px solid #e4e7ec;
+    border-radius: 6px;
+    padding: 8px 10px;
+    white-space: normal;
+    word-break: break-word;
+}
+
+.debug-prompt-pre {
+    font-size: 12px;
+    line-height: 1.45;
+    color: #101828;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ===== Suggested Follow-Up Prompt Chips ===== */
+
+.suggestion-chips-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 4px 0 0;
+}
+
+.suggestion-chips-label {
+    font-size: 14px;
+    font-weight: 600;
+    color: #344054;
+    margin-bottom: 2px;
+}
+
+.suggestion-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid #d0d5dd;
+    border-radius: 12px;
+    background: #f8fafc;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.suggestion-chip:hover {
+    border-color: #98a2b3;
+    background: #eff8ff;
+}
+
+.suggestion-chip-text {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.35;
+    color: #344054;
+    cursor: pointer;
+    user-select: none;
+}
+
+.suggestion-chip-text:hover {
+    color: #1570ef;
+}
+
+.suggestion-chip-copy {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid #e4e7ec;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #667085;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.suggestion-chip-copy:hover {
+    background: #f2f4f7;
+    color: #344054;
+    border-color: #d0d5dd;
+}
+
+.suggestion-chip-copy.copied {
+    color: #12b76a;
+    border-color: #12b76a;
+}
+
+/* Hide all message-level action buttons for Explore Further blocks. */
+.suggestion-step .buttons button,
+.suggestion-step [class*="message-actions"] button,
+.suggestion-step [class*="MessageActions"] button,
+.suggestion-step [data-testid*="action"] button {
+    display: none !important;
+}
+
+/* Remove copy actions globally (they copy raw HTML for custom chips). */
+button[aria-label*="copy" i],
+button[title*="copy" i],
+button[aria-label*="clipboard" i],
+button[title*="clipboard" i],
+[data-testid*="copy" i],
+[class*="copy" i] button {
+    display: none !important;
+}
+
+/* Mobile: stack chips full-width */
+@media (max-width: 768px) {
+    .suggestion-chip {
+        padding: 12px 16px;
+    }
+}
+
+/* Make the assistant logo fill the avatar slot more cleanly. */
+img[alt^="Avatar for"] {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: cover !important;
+    object-position: center !important;
+    transform: scale(1.12) !important;
+    transform-origin: center center !important;
+}
+
+

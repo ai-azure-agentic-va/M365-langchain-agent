@@ -102,27 +102,27 @@ Every box is a separate system. Arrows show who initiates communication.
 │                                                                              │
 │    ┌────────────────────────┐       ┌──────────────────────────────┐         │
 │    │ Azure Bot Service      │       │ Azure Application Gateway    │         │
-│    │ [Microsoft Managed]    │──────►│ [AGIC on AKS]                │         │
+│    │ [Microsoft Managed]    │──────►│ [Container Apps Ingress]     │         │
 │    │                        │       │                              │         │
 │    │ Configured with MSI    │       │ TLS termination (HTTPS→HTTP) │         │
 │    │ or App Password auth   │       │ FQDN: <cluster-fqdn>        │         │
 │    │ Channels: Teams,       │       │ Cert: <ssl-cert-name>        │         │
 │    │   DirectLine, WebChat  │       │                              │         │
 │    │                        │       │ Routes:                      │         │
-│    │ Endpoint:              │       │  /api/messages → :8000       │         │
-│    │  https://<fqdn>/       │       │  /health       → :8000       │         │
-│    │    api/messages         │       │  /readiness    → :8000       │         │
+│    │ Endpoint:              │       │  /api/messages → :8080       │         │
+│    │  https://<fqdn>/       │       │  /health       → :8080       │         │
+│    │    api/messages         │       │  /readiness    → :8080       │         │
 │    └────────────────────────┘       └──────────────┬───────────────┘         │
 │                                                    │                         │
 │                                                    │ HTTP (plain, in-cluster)│
 │                                                    ▼                         │
-│    AKS CLUSTER · namespace: <namespace>                                     │
-│    ────────────────────────────────────                                      │
+│    AZURE CONTAINER APPS                                                     │
+│    ────────────────────                                                      │
 │                                                                              │
 │    ┌─────────────────────────────────────────────────────────────────┐       │
 │    │                                                                 │       │
 │    │  M365 LangChain Agent Container                                 │       │
-│    │  [Python 3.10 · FastAPI · uvicorn · port 8000]                  │       │
+│    │  [Python 3.10 · FastAPI · uvicorn · port 8080]                  │       │
 │    │                                                                 │       │
 │    │  Image: <acr-name>.azurecr.io/                                  │       │
 │    │         m365-langchain-agent:<tag>                               │       │
@@ -131,8 +131,8 @@ Every box is a separate system. Arrows show who initiates communication.
 │    │  │ FastAPI App (app.py)                                     │    │       │
 │    │  │                                                          │    │       │
 │    │  │  POST /api/messages  ← Bot Framework Activity JSON       │    │       │
-│    │  │  GET  /health        ← K8s liveness probe                │    │       │
-│    │  │  GET  /readiness     ← K8s readiness probe               │    │       │
+│    │  │  GET  /health        ← liveness probe                     │    │       │
+│    │  │  GET  /readiness     ← readiness probe                    │    │       │
 │    │  └──────────┬───────────────────────────────────────────────┘    │       │
 │    │             │                                                   │       │
 │    │             │ Deserializes Activity, invokes bot handler         │       │
@@ -189,8 +189,8 @@ Every box is a separate system. Arrows show who initiates communication.
 
 | Container | Technology | Runs On | Purpose |
 |-----------|-----------|---------|---------|
-| M365 LangChain Agent | Python 3.10, FastAPI, uvicorn | AKS pod | Receives Bot messages, runs RAG, replies |
-| Application Gateway | AGIC (Azure-managed) | AKS cluster | TLS termination, path routing |
+| M365 LangChain Agent | Python 3.10, FastAPI, uvicorn | Container Apps | Receives Bot messages, runs RAG, replies |
+| Container Apps Ingress | Azure-managed | Container Apps Environment | TLS termination, path routing |
 | Azure Bot Service | Microsoft-managed | Azure global | Channels (Teams/Web), Activity routing |
 | Azure AI Search | Microsoft-managed | Azure | Document search index |
 | Azure OpenAI | Microsoft-managed | Azure | LLM + embeddings |
@@ -215,9 +215,9 @@ Every box is a separate system. Arrows show who initiates communication.
 │  │  ════════════════════════════                                       │     │
 │  │                                                                     │     │
 │  │  Responsibilities:                                                  │     │
-│  │    • HTTP server (uvicorn, port 8000)                               │     │
+│  │    • HTTP server (uvicorn, port 8080)                               │     │
 │  │    • POST /api/messages — Bot Framework entry point                 │     │
-│  │    • GET /health, /readiness — Kubernetes probes                    │     │
+│  │    • GET /health, /readiness — health probes                        │     │
 │  │    • Initializes BotFrameworkAdapter with credentials                │     │
 │  │    • Global error handler (on_turn_error)                           │     │
 │  │                                                                     │     │
@@ -403,7 +403,7 @@ Every box is a separate system. Arrows show who initiates communication.
 | 1 | Employee | Types question | Teams UI | "What is the VPN policy?" |
 | 2 | Teams | Sends to Bot Service | Internal | Activity JSON with type=message |
 | 3 | Bot Service | Forwards to endpoint | HTTPS POST `/api/messages` | Adds JWT auth header |
-| 4 | App Gateway | TLS termination | HTTPS → HTTP | Forwards to pod port 8000 |
+| 4 | Container Apps Ingress | TLS termination | HTTPS → HTTP | Forwards to container port 8080 |
 | 5 | app.py | Deserializes Activity | In-process | BotFrameworkAdapter.process_activity() |
 | 6 | bot.py | Validates, extracts text | In-process | on_message_activity() |
 | 7 | cosmos_store.py | Loads conversation history | HTTPS → CosmosDB | get_history(conversation_id) |
@@ -428,26 +428,21 @@ Every box is a separate system. Arrows show who initiates communication.
 │                                                                      │
 │  AZURE (<region>)                                                    │
 │                                                                      │
-│  Resource Group: <aks-resource-group>                                 │
+│  Resource Group: <resource-group>                                     │
 │  ┌────────────────────────────────────────────────────────────┐      │
 │  │                                                            │      │
-│  │  AKS Cluster: <cluster-name>                               │      │
-│  │  Namespace: <namespace>                                    │      │
+│  │  Container Apps Environment                                │      │
 │  │                                                            │      │
 │  │  ┌──────────────────────────────────────────────────┐     │      │
-│  │  │ Pod: m365-langchain-agent-xxx                     │     │      │
+│  │  │ Container App: m365-langchain-agent               │     │      │
 │  │  │ Image: <acr-name>.azurecr.io/                     │     │      │
 │  │  │        m365-langchain-agent:<tag>                  │     │      │
-│  │  │ Port: 8000                                        │     │      │
-│  │  │ CPU: 250m-500m | Memory: 512Mi-1Gi                │     │      │
+│  │  │ Port: 8080                                        │     │      │
+│  │  │ CPU: 0.5 | Memory: 1 GiB                         │     │      │
 │  │  └──────────────────────────────────────────────────┘     │      │
 │  │                                                            │      │
-│  │  Service: m365-langchain-agent (ClusterIP :8000)           │      │
-│  │  Ingress: /api/messages, /health, /readiness               │      │
-│  │                                                            │      │
-│  │  Application Gateway (AGIC):                               │      │
-│  │    FQDN: <cluster-fqdn>                                    │      │
-│  │    TLS: <ssl-cert-name>                                    │      │
+│  │  Ingress: External, HTTPS (auto TLS)                       │      │
+│  │  FQDN: <app-name>.<region>.azurecontainerapps.io           │      │
 │  │                                                            │      │
 │  └────────────────────────────────────────────────────────────┘      │
 │                                                                      │
@@ -574,13 +569,13 @@ provided in the incoming Activity. This outbound call requires authentication.
 
 | Mode | Condition | Credential Class | How It Works |
 |------|-----------|-----------------|--------------|
-| **UserAssignedMSI** | `BOT_APP_ID` set, `BOT_APP_PASSWORD` empty | `MsiAppCredentials` | Uses `ManagedIdentityCredential` from `azure-identity` to acquire tokens from the IMDS endpoint on the AKS node |
+| **UserAssignedMSI** | `BOT_APP_ID` set, `BOT_APP_PASSWORD` empty | `MsiAppCredentials` | Uses `ManagedIdentityCredential` from `azure-identity` to acquire tokens from the managed identity endpoint |
 | **App Password** | `BOT_APP_ID` set, `BOT_APP_PASSWORD` set | `MicrosoftAppCredentials` | Uses client_credentials grant with app ID + secret |
 | **No Auth** | `BOT_APP_ID` empty | None | Emulator/local testing only |
 
 **MSI outbound flow (UserAssignedMSI mode):**
 ```
-LangChain Agent (AKS Pod)                    Azure AD                Bot Connector
+LangChain Agent (Container App)              Azure AD                Bot Connector
     │                                           │                        │
     │  1. context.send_activity(reply)           │                        │
     │                                           │                        │
@@ -590,7 +585,7 @@ LangChain Agent (AKS Pod)                    Azure AD                Bot Connect
     │     scope: api://botframework.com/.default │                        │
     │                                           │                        │
     │  3. Azure AD returns access token          │                        │
-    │     (via IMDS on AKS node VMSS)            │                        │
+    │     (via managed identity endpoint)         │                        │
     │◄─────────────────────────────────────────│                        │
     │                                           │                        │
     │  4. POST {serviceUrl}/v3/conversations/    │                        │
@@ -603,10 +598,9 @@ LangChain Agent (AKS Pod)                    Azure AD                Bot Connect
 ```
 
 **MSI prerequisites:**
-- The User-Assigned Managed Identity must be assigned to the AKS VMSS node pool
-  (not just created — the pod needs to reach the IMDS endpoint for that identity)
+- The User-Assigned Managed Identity must be assigned to the Container App
 - The MSI's service principal must be authorized for the Bot Framework API scope
-- `BOT_AUTH_TENANT` must be set in the ConfigMap
+- `BOT_AUTH_TENANT` must be set as an environment variable
 
 **Custom adapter (botbuilder-python limitation):**
 
@@ -632,51 +626,49 @@ else:
 
 | Connection | Auth Method | Credential Source | Transport |
 |------------|-------------|-------------------|-----------|
-| Agent → Azure OpenAI (LLM) | API Key in header (`api-key`) | K8s Secret: `AZURE_OPENAI_API_KEY` | HTTPS (public endpoint) |
-| Agent → Azure OpenAI (Embeddings) | API Key in header (`api-key`) | K8s Secret: `AZURE_OPENAI_API_KEY` | HTTPS (public endpoint) |
-| Agent → Azure AI Search | API Key in header (`api-key`) | K8s Secret: `AZURE_SEARCH_API_KEY` | HTTPS (public endpoint) |
-| Agent → Azure CosmosDB | API Key in header | K8s Secret: `AZURE_COSMOS_KEY` | HTTPS (private endpoint) |
-| Agent → LangSmith | API Key in header (`x-api-key`) | K8s Secret: `LANGSMITH_API_KEY` | HTTPS (SaaS) |
+| Agent → Azure OpenAI (LLM) | Managed Identity (`DefaultAzureCredential`) | User-Assigned MSI via `AZURE_CLIENT_ID` | HTTPS (public endpoint) |
+| Agent → Azure OpenAI (Embeddings) | Managed Identity (`DefaultAzureCredential`) | User-Assigned MSI via `AZURE_CLIENT_ID` | HTTPS (public endpoint) |
+| Agent → Azure AI Search | Managed Identity (`DefaultAzureCredential`) | User-Assigned MSI via `AZURE_CLIENT_ID` | HTTPS (public endpoint) |
+| Agent → Azure CosmosDB | Managed Identity (`DefaultAzureCredential`) | User-Assigned MSI via `AZURE_CLIENT_ID` | HTTPS (private endpoint) |
+| Agent → LangSmith | API Key in header (`x-api-key`) | Container Apps secret: `LANGSMITH_API_KEY` | HTTPS (SaaS) |
 | Foundry registration script → AI Foundry | `DefaultAzureCredential` (Bearer token) | Azure AD (interactive/MSI) | HTTPS |
 
 ### ④ TLS / Transport Security
 
 ```
-Internet                    App Gateway                     AKS Pod
+Internet                    Container Apps Ingress          Container App
    │                           │                               │
    │  HTTPS (TLS 1.2+)        │                               │
-   │  CA-signed certificate    │   HTTP (plain, in-cluster)    │
-   │  (e.g. Let's Encrypt)    │   No TLS (trusted network)    │
+   │  Managed certificate      │   HTTP (internal)             │
+   │  (auto-provisioned)       │   No TLS (trusted network)    │
    │──────────────────────────►│──────────────────────────────►│
    │                           │                               │
-   │  Certificate must be      │   App Gateway terminates      │
+   │  Certificate must be      │   Container Apps terminates   │
    │  trusted by Azure Bot     │   TLS and forwards as HTTP    │
-   │  Service (NOT self-signed)│   to ClusterIP service        │
-   │                           │   on port 8000                │
+   │  Service (NOT self-signed)│   to container on port 8080   │
 ```
 
 **Critical requirement:** Azure Bot Service **will not connect** to endpoints with self-signed
 or untrusted TLS certificates. There is no error returned to the user — Bot Service silently
-drops the request. The pod logs will show zero inbound POST requests.
+drops the request. The container logs will show zero inbound POST requests.
 
 **Certificate management:**
 | Setting | Value |
 |---------|-------|
-| TLS Termination | App Gateway (AGIC) |
-| Certificate Reference | `appgw.ingress.kubernetes.io/appgw-ssl-certificate` ingress annotation |
-| Recommended CA | Let's Encrypt (free, 90-day validity, HTTP-01 challenge) |
-| Renewal | Certbot with auth/cleanup hooks → convert PEM to PFX → upload to App Gateway |
+| TLS Termination | Container Apps Ingress (managed) |
+| Certificate | Auto-provisioned managed certificate |
+| Recommended | Use Container Apps managed certificates (auto-renewal) or custom domain with your own cert |
 
 ### Network Security
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  AKS VNet                                                        │
+│  Container Apps VNet                                             │
 │                                                                  │
 │  ┌──────────────────────────┐                                    │
-│  │  AKS Subnet              │                                    │
+│  │  Container Apps Subnet   │                                    │
 │  │                          │                                    │
-│  │  Pod ──── ClusterIP ──── App Gateway ──── Internet            │
+│  │  Container ──── Ingress ──── Internet                         │
 │  │   │                                                           │
 │  │   │  Private Endpoint (10.224.0.x)                            │
 │  │   └──────────────────────────────────── CosmosDB              │
@@ -708,33 +700,31 @@ drops the request. The pod logs will show zero inbound POST requests.
 
 ```
 ┌──────────────────────────────┐     ┌──────────────────────────────┐
-│  K8s Secret                  │     │  K8s ConfigMap                │
-│  (m365-langchain-agent-      │     │  (m365-langchain-agent-       │
-│   secrets)                   │     │   config)                     │
+│  Container Apps Secrets      │     │  Container Apps Env Vars      │
 │                              │     │                              │
-│  AZURE_OPENAI_API_KEY    ●   │     │  AZURE_OPENAI_ENDPOINT   ○   │
-│  AZURE_SEARCH_API_KEY    ●   │     │  AZURE_SEARCH_ENDPOINT   ○   │
-│  AZURE_COSMOS_KEY        ●   │     │  AZURE_COSMOS_ENDPOINT   ○   │
-│  LANGSMITH_API_KEY       ●   │     │  BOT_APP_ID              ○   │
-│  BOT_APP_PASSWORD        ●   │     │  BOT_AUTH_TENANT         ○   │
-│  (empty for MSI)             │     │  AZURE_SEARCH_INDEX_NAME ○   │
-│                              │     │  LOG_LEVEL               ○   │
-│  ● = sensitive, encrypted    │     │  ○ = non-sensitive            │
-│    at rest by K8s            │     │                              │
+│  LANGSMITH_API_KEY       ●   │     │  AZURE_OPENAI_ENDPOINT   ○   │
+│  CHAINLIT_AUTH_SECRET    ●   │     │  AZURE_SEARCH_ENDPOINT   ○   │
+│                              │     │  AZURE_COSMOS_ENDPOINT   ○   │
+│  ● = sensitive, encrypted    │     │  BOT_APP_ID              ○   │
+│    at rest                   │     │  AZURE_CLIENT_ID         ○   │
+│                              │     │  AZURE_SEARCH_INDEX_NAME ○   │
+│  Auth: Managed Identity      │     │  LOG_LEVEL               ○   │
+│  (no API keys needed)        │     │  ○ = non-sensitive            │
+│                              │     │                              │
 └──────────────────────────────┘     └──────────────────────────────┘
 
          │                                      │
          └──────────────┬───────────────────────┘
                         │
                         ▼
-              Pod env vars (injected at startup)
+              Container env vars (injected at startup)
               Never written to disk inside container
 ```
 
 **Security rules:**
-- API keys stored in K8s Secrets (encrypted at rest by etcd encryption)
-- Non-sensitive config (endpoints, feature flags) in ConfigMaps
-- No secrets in source code, Dockerfiles, or ConfigMaps
+- API keys stored in Container Apps secrets (encrypted at rest)
+- Non-sensitive config (endpoints, feature flags) as environment variables
+- No secrets in source code, Dockerfiles, or plain env vars
 - `.env` files used only for local development (gitignored)
 - Container runs as non-root user (Python slim base image)
 
@@ -749,7 +739,7 @@ drops the request. The pod logs will show zero inbound POST requests.
 | CosmosDB auth | API key + private endpoint | Managed Identity + RBAC (`Cosmos DB Built-in Data Contributor`) |
 | CosmosDB network | Private endpoint (public OFF) | Already production-ready |
 | OpenAI/Search network | Public endpoint | Add private endpoints + VNet integration |
-| Pod security | Default | Add NetworkPolicy to restrict egress to required endpoints only |
+| Container security | Default | Restrict egress to required endpoints only via VNet/NSG rules |
 | Secret rotation | Manual | Azure Key Vault + CSI driver for auto-rotation |
 | Audit logging | LangSmith traces | Add Azure Monitor + Log Analytics workspace |
 
@@ -804,9 +794,9 @@ See [.env.example](.env.example) for the complete list of required variables.
 
 | Group | Key Variables |
 |-------|--------------|
-| Azure OpenAI | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT_NAME` |
-| Azure AI Search | `AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_API_KEY`, `AZURE_SEARCH_INDEX_NAME` |
-| CosmosDB | `AZURE_COSMOS_ENDPOINT`, `AZURE_COSMOS_KEY`, `AZURE_COSMOS_DATABASE` |
+| Azure OpenAI | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT_NAME` (auth via Managed Identity) |
+| Azure AI Search | `AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_INDEX_NAME` (auth via Managed Identity) |
+| CosmosDB | `AZURE_COSMOS_ENDPOINT`, `AZURE_COSMOS_DATABASE` (auth via Managed Identity) |
 | Bot Framework | `BOT_APP_ID`, `BOT_APP_PASSWORD` |
 | LangSmith | `LANGSMITH_API_KEY`, `LANGCHAIN_TRACING_V2` |
 | Foundry | `AZURE_FOUNDRY_ENDPOINT`, `AZURE_FOUNDRY_SUBSCRIPTION_ID` |

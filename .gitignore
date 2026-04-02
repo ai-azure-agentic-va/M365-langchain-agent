@@ -9,3 +9,14 @@ build/
 venv/
 .pytest_cache/
 .chainlit/
+.files/
+.setup-sso-env.sh
+
+# SSO Documentation (not committed to repo)
+SSO_IMPLEMENTATION_SUMMARY.md
+SSO_QUICK_REFERENCE.md
+docs/SSO_DEPLOYMENT_GUIDE.md
+docs/SSO_IMPLEMENTATION_JOURNEY.md
+
+# SSO Scripts (contains secrets)
+scripts/setup-sso-env.sh

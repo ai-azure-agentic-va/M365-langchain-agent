@@ -5,13 +5,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY app.py .
 COPY m365_langchain_agent/ ./m365_langchain_agent/
+COPY public/ ./public/
 
-EXPOSE 8000
+EXPOSE 8080
 
 # USER_INTERFACE: BOT_SERVICE (default) or CHAINLIT_UI
 ENV USER_INTERFACE=BOT_SERVICE
-# DEPLOY_TARGET: CONTAINER_APPS (default) or KUBERNETES
-ENV DEPLOY_TARGET=CONTAINER_APPS
+ENV PORT=8080
 
-CMD ["python", "-m", "m365_langchain_agent.main"]
+CMD ["python", "app.py"]

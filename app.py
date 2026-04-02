@@ -1,14 +1,15 @@
-"""FastAPI application — Bot Framework /api/messages endpoint + health checks.
+"""Single entry point for the container.
 
-This is the single entry point for the container. It:
-    1. Receives Bot Framework Activity JSON at POST /api/messages
-    2. Validates the incoming request using BotFrameworkAdapter
-    3. Routes to DocAgentBot for processing
-    4. Exposes /health and /readiness for K8s probes
+Modes (set USER_INTERFACE env var):
+    CHAINLIT_UI  → Mounts Chainlit web chat at /chat, redirects / → /chat
+    BOT_SERVICE  → Exposes /api/messages for Bot Framework (default)
+
+Both modes share /health, /readiness, /test/query endpoints.
 """
 
 import logging
 import os
+import sys
 
 from dotenv import load_dotenv
 
@@ -18,6 +19,8 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import RedirectResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from botbuilder.core import (
     BotFrameworkAdapter,
     BotFrameworkAdapterSettings,
@@ -175,16 +178,12 @@ async def messages(request: Request) -> Response:
         return Response(status_code=500, content="Internal server error")
 
 
-DEPLOY_TARGET = os.environ.get("DEPLOY_TARGET", "CONTAINER_APPS").upper().strip()
-
-
 @app.get("/health")
 async def health():
     """Health check for liveness probe."""
     return {
         "status": "healthy",
         "service": "m365-langchain-agent",
-        "deploy_target": DEPLOY_TARGET,
     }
 
 
@@ -194,7 +193,6 @@ async def readiness():
     return {
         "status": "ready",
         "service": "m365-langchain-agent",
-        "deploy_target": DEPLOY_TARGET,
     }
 
 
@@ -212,6 +210,7 @@ async def test_query(request: Request):
     model_name = body.get("model")
     top_k = body.get("top_k")
     temperature = body.get("temperature")
+    filter_expr = body.get("filter")
 
     if not query:
         return {"error": "Missing 'query' field"}
@@ -237,6 +236,7 @@ async def test_query(request: Request):
             model_name=model_name,
             top_k=int(top_k) if top_k else None,
             temperature=float(temperature) if temperature is not None else None,
+            filter_expr=filter_expr,
         )
         answer = agent_result["answer"]
         sources = agent_result["sources"]
@@ -247,6 +247,7 @@ async def test_query(request: Request):
         }
         results["answer"] = answer
         results["sources"] = sources
+        results["raw_chunks"] = agent_result.get("raw_chunks", [])
     except Exception as e:
         results["steps"]["agent"] = {"status": "error", "error": str(e)}
         results["answer"] = None
@@ -278,9 +279,117 @@ async def root():
     }
 
 
+# ---------------------------------------------------------------------------
+# SSO / Authentication (Chainlit UI only)
+# ---------------------------------------------------------------------------
+
+@app.get("/auth/login")
+async def auth_login(request: Request):
+    """Initiate Entra ID SSO login flow."""
+    from m365_langchain_agent.auth import login_route
+    return login_route(request)
+
+
+@app.get("/auth/callback")
+async def auth_callback(request: Request):
+    """Handle OAuth callback from Entra ID."""
+    from m365_langchain_agent.auth import callback_route
+    return callback_route(request)
+
+
+@app.get("/auth/logout")
+async def auth_logout(request: Request):
+    """Logout and clear SSO session."""
+    from m365_langchain_agent.auth import logout_route
+    return logout_route(request)
+
+
+@app.get("/auth/error")
+async def auth_error(request: Request):
+    """Auth error page."""
+    message = request.query_params.get("message", "Authentication failed")
+    return Response(
+        content=f"<html><body><h1>Authentication Error</h1><p>{message}</p><p><a href='/auth/login'>Try again</a></p></body></html>",
+        media_type="text/html",
+    )
+
+
+# ---------------------------------------------------------------------------
+# SSO Middleware (protects /chat/ routes in Chainlit UI mode)
+# ---------------------------------------------------------------------------
+
+class SSOAuthMiddleware(BaseHTTPMiddleware):
+    """Middleware that enforces SSO authentication for Chainlit UI routes.
+
+    Checks for a valid session cookie on /chat/* requests.
+    Redirects to /auth/login if not authenticated.
+    Injects user identity as X-User-* headers for Chainlit's header_auth_callback.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # Only protect /chat/ routes (Chainlit UI)
+        if path.startswith("/chat/"):
+            from m365_langchain_agent.auth import get_user_from_request
+
+            user = get_user_from_request(request)
+
+            if not user:
+                # Not authenticated — redirect to login
+                # Preserve the original path for post-login redirect
+                return RedirectResponse(url=f"/auth/login?next={path}")
+
+            # Authenticated — inject user identity as custom headers for Chainlit
+            # Chainlit's header_auth_callback will read these
+            request.state.user = user  # Store in request state
+            request.scope["headers"].append((b"x-user-oid", user["oid"].encode()))
+            request.scope["headers"].append((b"x-user-name", user["name"].encode()))
+            request.scope["headers"].append((b"x-user-email", (user.get("email") or "").encode()))
+            request.scope["headers"].append((b"x-user-role", user["role"].encode()))
+
+        response = await call_next(request)
+        return response
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.environ.get("PORT", "8000"))
-    logger.info(f"[App] Starting M365 LangChain Agent on port {port}")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", "8080"))
+    user_interface = os.environ.get("USER_INTERFACE", "BOT_SERVICE").upper().strip()
+
+    logger.info(f"[App] USER_INTERFACE={user_interface}")
+
+    if user_interface == "CHAINLIT_UI":
+        logger.info(f"[App] Starting Chainlit UI on port {port}")
+        from chainlit.utils import mount_chainlit
+
+        # Add SSO middleware to protect /chat/ routes
+        enable_sso = os.environ.get("ENABLE_SSO", "true").lower().strip() == "true"
+        if enable_sso:
+            logger.info("[App] SSO enabled — adding authentication middleware")
+            app.add_middleware(SSOAuthMiddleware)
+        else:
+            logger.warning("[App] SSO disabled (ENABLE_SSO=false) — running without authentication")
+
+        chainlit_target = os.path.join(
+            os.path.dirname(__file__), "m365_langchain_agent", "chainlit_app.py"
+        )
+        mount_chainlit(app=app, target=chainlit_target, path="/chat")
+
+        # Replace root route with redirect to Chainlit UI
+        app.routes[:] = [r for r in app.routes if not (hasattr(r, "path") and r.path == "/")]
+
+        @app.get("/", include_in_schema=False)
+        async def root_redirect():
+            return RedirectResponse(url="/chat/")
+
+        uvicorn.run(app, host="0.0.0.0", port=port)
+
+    elif user_interface == "BOT_SERVICE":
+        logger.info(f"[App] Starting Bot Service on port {port}")
+        uvicorn.run(app, host="0.0.0.0", port=port)
+
+    else:
+        logger.error(f"[App] Unknown USER_INTERFACE='{user_interface}'. Use CHAINLIT_UI or BOT_SERVICE.")
+        sys.exit(1)
