@@ -52,6 +52,11 @@ CHAINLIT_AUTH_SECRET="${CHAINLIT_AUTH_SECRET:?Set CHAINLIT_AUTH_SECRET — run: 
 # LangSmith (optional)
 LANGSMITH_API_KEY="${LANGSMITH_API_KEY:-}"
 
+# UI prompt controls (optional)
+SHOW_SUGGESTED_PROMPTS="${SHOW_SUGGESTED_PROMPTS:-true}"
+SHOW_STARTER_PROMPTS="${SHOW_STARTER_PROMPTS:-true}"
+STARTER_PROMPTS="${STARTER_PROMPTS:-[]}"
+
 # ---------------------------------------------------------------------------
 # Optional configuration — defaults provided
 # ---------------------------------------------------------------------------
@@ -130,6 +135,9 @@ az containerapp create \
         LANGCHAIN_PROJECT="m365-langchain-agent" \
         LANGSMITH_API_KEY="$LANGSMITH_API_KEY" \
         CHAINLIT_AUTH_SECRET="$CHAINLIT_AUTH_SECRET" \
+        SHOW_SUGGESTED_PROMPTS="$SHOW_SUGGESTED_PROMPTS" \
+        SHOW_STARTER_PROMPTS="$SHOW_STARTER_PROMPTS" \
+        STARTER_PROMPTS="$STARTER_PROMPTS" \
         LOG_LEVEL="INFO" \
         PORT="8080" \
     --only-show-errors -o none

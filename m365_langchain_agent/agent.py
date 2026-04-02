@@ -187,22 +187,6 @@ def _build_llm(temperature: float = None, model_name: str = None) -> AzureChatOp
     return AzureChatOpenAI(**kwargs)
 
 
-def _deduplicate_sources(documents: List[Dict]) -> List[Dict]:
-    """Group chunks from the same document — keep the highest-scoring chunk per source_url."""
-    seen = {}
-    for d in documents:
-        key = d.get("source_url") or d.get("file_name") or d.get("document_title") or id(d)
-        existing = seen.get(key)
-        if existing is None:
-            seen[key] = d
-        else:
-            # Keep the one with higher reranker_score (or search score)
-            new_score = d.get("reranker_score") or d.get("score", 0)
-            old_score = existing.get("reranker_score") or existing.get("score", 0)
-            if new_score > old_score:
-                seen[key] = d
-    return list(seen.values())
-
 
 SHAREPOINT_BASE_URL = os.environ.get("SHAREPOINT_BASE_URL", "")
 WIKI_BASE_URL = os.environ.get("WIKI_BASE_URL", "")
@@ -439,14 +423,10 @@ async def invoke_agent(
     raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
     logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}, sttm={is_sttm}) for: {search_query[:100]}")
 
-    # 2. Deduplicate — group chunks from same document
-    documents = _deduplicate_sources(raw_documents)
-    logger.info(f"[Agent] After dedup: {len(documents)} unique sources")
-
-    # 2b. Document discovery — get full list of matching doc names via faceting
+    # 2. Document discovery — get full list of matching doc names via faceting
     #     so the LLM can list ALL relevant docs, not just the retrieved subset
     all_doc_names = None
-    unique_sources = _get_unique_source_names(documents)
+    unique_sources = _get_unique_source_names(raw_documents)
     if len(unique_sources) > 1:
         all_doc_names = search_client.search_document_names(search_query)
         if all_doc_names:
@@ -455,9 +435,10 @@ async def invoke_agent(
                 f"(retrieved {len(unique_sources)})"
             )
 
-    # 3. Build context and sources
-    context = _format_context(documents, all_document_names=all_doc_names)
-    sources = _build_sources(documents)
+    # 3. Build context from ALL chunks (not deduped) — LLM needs full context
+    #    Sources for citation display use deduped list
+    context = _format_context(raw_documents, all_document_names=all_doc_names)
+    sources = _build_sources(raw_documents)
 
     # 4. Build message history for the LLM
     messages = [SystemMessage(content=effective_prompt)]
@@ -532,16 +513,17 @@ async def invoke_agent_stream(
 
     search_client = get_search_client()
     raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
-    documents = _deduplicate_sources(raw_documents)
+    logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}) for: {search_query[:100]}")
 
     # Document discovery — full list of matching doc names via faceting
     all_doc_names = None
-    unique_sources = _get_unique_source_names(documents)
+    unique_sources = _get_unique_source_names(raw_documents)
     if len(unique_sources) > 1:
         all_doc_names = search_client.search_document_names(search_query)
 
-    context = _format_context(documents, all_document_names=all_doc_names)
-    sources = _build_sources(documents)
+    # Pass ALL chunks to LLM context (not deduped) — LLM needs full context
+    context = _format_context(raw_documents, all_document_names=all_doc_names)
+    sources = _build_sources(raw_documents)
 
     messages = [SystemMessage(content=effective_prompt)]
     if conversation_history:

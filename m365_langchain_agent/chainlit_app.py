@@ -101,26 +101,45 @@ async def rename_author(author: str) -> str:
 
 @cl.set_starters
 async def set_starters():
-    """Card-style starter prompts shown in the empty chat state.
+    """Disable native Chainlit starters.
 
-    Reads from STARTER_PROMPTS env var (JSON array of {label, message} objects).
-    Returns None (no starters) if the env var is missing or empty.
+    We render custom starter chips in on_chat_start so starters and
+    suggested prompts share the same HTML/CSS and interaction pattern.
     """
+    return None
+
+
+def _load_starter_prompts() -> list[str]:
+    """Load starter prompt messages from STARTER_PROMPTS env JSON."""
     raw = os.environ.get("STARTER_PROMPTS", "").strip()
     if not raw:
-        return None
+        return []
     try:
         items = json.loads(raw)
     except json.JSONDecodeError:
         logger.warning("[Chainlit] STARTER_PROMPTS is not valid JSON — skipping starters")
-        return None
+        return []
     if not items:
-        return None
-    return [
-        cl.Starter(label=item["message"], message=item["message"])
-        for item in items
-        if item.get("message")
-    ]
+        return []
+    return [item["message"] for item in items if item.get("message")]
+
+
+def _build_starter_chips_html(starters: list[str]) -> str:
+    """Build starter chips with same style/markup as suggestion chips."""
+    chips = []
+    for s in starters:
+        safe = escape(s)
+        chips.append(
+            f'<div class="suggestion-chip starter-chip" data-starter-prompt="{safe}">'
+            f'<span class="suggestion-chip-text starter-chip-text">{safe}</span>'
+            f'</div>'
+        )
+    return (
+        '<div class="suggestion-chips-container starter-chips-container">'
+        '<div class="suggestion-chips-label">Try one of these prompts</div>'
+        + "".join(chips)
+        + '</div>'
+    )
 
 
 def _build_suggestion_chips_html(suggestions: list[str]) -> str:
@@ -151,6 +170,15 @@ async def on_chat_start():
     conversation_id = f"chainlit-{uuid.uuid4().hex[:12]}"
     cl.user_session.set("conversation_id", conversation_id)
     logger.info(f"[Chainlit] New session: conversation_id={conversation_id}")
+
+    # Welcome message
+    await cl.Message(
+        content=(
+            "Welcome to ETS Virtual Assistant. Ask a question to instantly search "
+            "our Knowledge Base and internal resources."
+        ),
+        author="assistant",
+    ).send()
 
     if SHOW_CHAT_SETTINGS:
         available_models = get_available_models()

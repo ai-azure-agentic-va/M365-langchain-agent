@@ -10,6 +10,7 @@ Both modes share /health, /readiness, /test/query endpoints.
 import logging
 import os
 import sys
+import json
 
 from dotenv import load_dotenv
 
@@ -32,6 +33,14 @@ from botframework.connector.auth import (
 from m365_langchain_agent.bot import DocAgentBot
 from m365_langchain_agent.agent import invoke_agent
 from m365_langchain_agent.cosmos_store import get_cosmos_store
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse a boolean environment flag from common truthy values."""
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +201,25 @@ async def readiness():
         "status": "ready",
         "service": "m365-langchain-agent",
     }
+
+
+@app.get("/starter-prompts")
+async def starter_prompts():
+    """Return starter prompts configured via env flags and STARTER_PROMPTS JSON."""
+    if not _env_flag("SHOW_STARTER_PROMPTS", default=True):
+        return {"prompts": []}
+
+    raw = os.environ.get("STARTER_PROMPTS", "").strip()
+    if not raw:
+        return {"prompts": []}
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("[App] STARTER_PROMPTS is not valid JSON")
+        return {"prompts": []}
+    prompts = [item.get("message", "").strip() for item in items if isinstance(item, dict)]
+    prompts = [p for p in prompts if p]
+    return {"prompts": prompts}
 
 
 @app.post("/test/query")
