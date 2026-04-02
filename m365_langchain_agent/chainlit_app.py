@@ -117,27 +117,32 @@ async def set_starters():
     if not items:
         return None
     return [
-        cl.Starter(label=item["label"], message=item["message"])
+        cl.Starter(label=item["message"], message=item["message"])
         for item in items
-        if item.get("label") and item.get("message")
+        if item.get("message")
     ]
 
 
-@cl.action_callback("suggested_prompt")
-async def on_suggested_prompt(action: cl.Action):
-    """Handle clicks on suggested follow-up prompt chips.
+def _build_suggestion_chips_html(suggestions: list[str]) -> str:
+    """Build HTML for follow-up suggestion chips.
 
-    Sends the suggestion as a new user message and processes it
-    through the normal RAG pipeline via on_message().
+    Each chip is clickable text that populates the input and submits immediately.
+    The JS in debug-accordion.js handles the interactivity.
     """
-    # Create a Message object that mimics a real user message
-    prompt = action.payload.get("prompt", "")
-    if not prompt:
-        return
-    user_msg = cl.Message(content=prompt, author="user")
-    await user_msg.send()
-    # Process through the normal handler
-    await on_message(user_msg)
+    chips = []
+    for s in suggestions:
+        safe = escape(s)
+        chips.append(
+            f'<div class="suggestion-chip" data-prompt="{safe}">'
+            f'<span class="suggestion-chip-text">{safe}</span>'
+            f'</div>'
+        )
+    return (
+        '<div class="suggestion-chips-container">'
+        '<div class="suggestion-chips-label">Want to explore further?</div>'
+        + "".join(chips)
+        + '</div>'
+    )
 
 
 @cl.on_chat_start
@@ -399,7 +404,8 @@ async def on_message(message: cl.Message):
             title = escape(chunk_data.get("document_title") or chunk_data.get("file_name") or "Untitled")
             search_score = chunk_data.get("score", 0)
             reranker_score = chunk_data.get("reranker_score")
-            source_url = escape(chunk_data.get("source_url", ""))
+            raw_source_url = chunk_data.get("source_url", "")
+            source_url = escape(quote(raw_source_url, safe="/:@?&#=") if raw_source_url else "")
             source_type = escape(chunk_data.get("source_type", ""))
             chunk_idx = chunk_data.get("chunk_index", "?")
             total_chunks_val = chunk_data.get("total_chunks", "?")
@@ -459,7 +465,7 @@ async def on_message(message: cl.Message):
         f"model={model}, sources={len(sources)}, raw_chunks={len(raw_chunks)}"
     )
 
-    # --- Suggested follow-up prompts ---
+    # --- Suggested follow-up prompts (rendered as custom HTML chips) ---
     if SHOW_SUGGESTED_PROMPTS and answer and not answer.startswith("Sorry,"):
         try:
             suggestions = await generate_suggested_prompts(
@@ -469,21 +475,8 @@ async def on_message(message: cl.Message):
                 model_name=model if model != DEFAULT_MODEL else None,
             )
             if suggestions:
-                actions = [
-                    cl.Action(
-                        name="suggested_prompt",
-                        label=s,
-                        payload={"prompt": s},
-                        tooltip=f"Click to ask: {s}",
-                    )
-                    for s in suggestions[:3]
-                ]
-                suggestion_msg = cl.Message(
-                    content="**Want to explore further?** Click a suggestion below:",
-                    author="assistant",
-                    actions=actions,
-                )
-                await suggestion_msg.send()
+                chips_html = _build_suggestion_chips_html(suggestions[:3])
+                await cl.Message(content=chips_html, author="assistant").send()
                 logger.info(f"[Chainlit] Showed {len(suggestions)} suggested prompts")
         except Exception as e:
             logger.warning(f"[Chainlit] Suggested prompts failed: {e}")

@@ -67,52 +67,49 @@ button[aria-label*="negative" i] {
     display: none !important;
 }
 
-/* Hide non-primary action icons in common message toolbars (keeps first button such as copy). */
-.step .buttons button:not(:first-child),
-[class*="message-actions"] button:not(:first-child),
-[class*="MessageActions"] button:not(:first-child),
-[data-testid*="action"] button:not(:first-child) {
+/* Hide all message action toolbar buttons globally (copy/feedback/etc.). */
+.step .buttons button,
+[class*="message-actions"] button,
+[class*="MessageActions"] button,
+[data-testid*="action"] button {
     display: none !important;
 }
 
 /* ===== Starter Prompt Cards ===== */
 .cl-starter-prompts-container {
     width: 100%;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 14px;
-    margin: 14px 0 10px;
-    align-items: stretch;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 6px 0 8px;
 }
 
 .cl-starter-prompt-card {
     width: 100%;
-    min-height: 118px;
-    padding: 16px 18px;
-    border: 1.5px solid #d0d5dd !important;
-    border-radius: 16px !important;
-    background: #ffffff !important;
-    color: #101828 !important;
+    min-height: 0;
+    padding: 10px 14px;
+    border: 1px solid #d0d5dd !important;
+    border-radius: 12px !important;
+    background: #f8fafc !important;
+    color: #344054 !important;
     text-align: left !important;
-    font-size: 15px !important;
-    font-weight: 600 !important;
-    line-height: 1.4 !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    line-height: 1.35 !important;
     cursor: pointer !important;
     white-space: normal !important;
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: flex-start !important;
-    justify-content: center !important;
-    gap: 0 !important;
-    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
-    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
+    gap: 10px !important;
+    box-shadow: none;
+    transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
 }
 
 .cl-starter-prompt-card:hover {
-    border-color: #53b1fd !important;
-    background: #f5fbff !important;
-    transform: translateY(-1px);
-    box-shadow: 0 6px 16px rgba(16, 24, 40, 0.10);
+    border-color: #98a2b3 !important;
+    background: #eff8ff !important;
+    color: #1570ef !important;
 }
 
 .cl-starter-prompt-card:focus-visible {
@@ -121,15 +118,8 @@ button[aria-label*="negative" i] {
 }
 
 @media (max-width: 768px) {
-    .cl-starter-prompts-container {
-        grid-template-columns: 1fr;
-        gap: 10px;
-        margin: 12px 0 8px;
-    }
-
     .cl-starter-prompt-card {
-        min-height: 96px;
-        padding: 14px 16px;
+        padding: 12px 16px;
     }
 }
 
@@ -232,53 +222,100 @@ button[aria-label*="negative" i] {
 }
 
 /* ===== Suggested Follow-Up Prompt Chips ===== */
-/* Clean, consistent styling for follow-up suggestions */
-button[id^="action-"] {
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: flex-start !important;
-    gap: 8px !important;
-    padding: 10px 14px !important;
-    margin: 5px 8px 0 0 !important;
-    border: 1px solid #d0d5dd !important;
-    border-radius: 12px !important;
-    background: #f8fafc !important;
-    color: #344054 !important;
-    font-size: 13px !important;
-    font-weight: 500 !important;
-    line-height: 1.3 !important;
-    cursor: pointer !important;
-    white-space: nowrap !important;
-    text-align: left !important;
-    max-width: 100% !important;
-    box-shadow: none !important;
-    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease !important;
+
+.suggestion-chips-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 4px 0 0;
 }
 
-button[id^="action-"]:hover {
-    border-color: #98a2b3 !important;
-    background: #eff8ff !important;
-    color: #1d2939 !important;
+.suggestion-chips-label {
+    font-size: 14px;
+    font-weight: 600;
+    color: #344054;
+    margin-bottom: 2px;
 }
 
-button[id^="action-"]:active {
-    background: #e4e7ec !important;
+.suggestion-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border: 1px solid #d0d5dd;
+    border-radius: 12px;
+    background: #f8fafc;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
-button[id^="action-"]:focus-visible {
-    outline: 2px solid #1570ef !important;
-    outline-offset: 2px !important;
+.suggestion-chip:hover {
+    border-color: #98a2b3;
+    background: #eff8ff;
 }
 
-/* On mobile, make follow-up suggestions easier to tap */
+.suggestion-chip-text {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.35;
+    color: #344054;
+    cursor: pointer;
+    user-select: none;
+}
+
+.suggestion-chip-text:hover {
+    color: #1570ef;
+}
+
+.suggestion-chip-copy {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid #e4e7ec;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #667085;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.suggestion-chip-copy:hover {
+    background: #f2f4f7;
+    color: #344054;
+    border-color: #d0d5dd;
+}
+
+.suggestion-chip-copy.copied {
+    color: #12b76a;
+    border-color: #12b76a;
+}
+
+/* Hide all message-level action buttons for Explore Further blocks. */
+.suggestion-step .buttons button,
+.suggestion-step [class*="message-actions"] button,
+.suggestion-step [class*="MessageActions"] button,
+.suggestion-step [data-testid*="action"] button {
+    display: none !important;
+}
+
+/* Remove copy actions globally (they copy raw HTML for custom chips). */
+button[aria-label*="copy" i],
+button[title*="copy" i],
+button[aria-label*="clipboard" i],
+button[title*="clipboard" i],
+[data-testid*="copy" i],
+[class*="copy" i] button {
+    display: none !important;
+}
+
+/* Mobile: stack chips full-width */
 @media (max-width: 768px) {
-    button[id^="action-"] {
-        display: flex !important;
-        width: 100% !important;
-        max-width: 100% !important;
-        padding: 12px 16px !important;
-        margin: 6px 0 0 !important;
-        white-space: normal !important;
+    .suggestion-chip {
+        padding: 12px 16px;
     }
 }
 

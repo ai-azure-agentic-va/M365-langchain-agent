@@ -208,44 +208,6 @@ SHAREPOINT_BASE_URL = os.environ.get("SHAREPOINT_BASE_URL", "")
 WIKI_BASE_URL = os.environ.get("WIKI_BASE_URL", "")
 
 
-def _normalize_source_url(url: str, source_type: str) -> str:
-    """Normalize source URLs — convert ADLS blob URLs to clickable original-source links.
-
-    Handles three cases:
-    1. Already a proper HTTP URL (not blob storage) — return as-is
-    2. ADLS blob URL — extract relative path, reconstruct using base URL + source_type
-    3. Relative path — reconstruct using base URL + source_type
-    """
-    if not url:
-        return ""
-    # Already a proper HTTP URL (SharePoint, wiki, etc.) — keep as-is
-    if url.startswith("http") and ".blob.core.windows.net" not in url:
-        return url
-
-    # Extract relative path from ADLS blob URL
-    relative_path = url
-    if ".blob.core.windows.net" in url:
-        parts = url.split(".blob.core.windows.net/", 1)
-        if len(parts) == 2:
-            blob_path = parts[1]
-            # Strip container prefix (e.g. "raw-documents/")
-            segments = blob_path.split("/", 1)
-            relative_path = segments[1] if len(segments) == 2 else blob_path
-
-    # Reconstruct clickable URL based on source_type (or infer from path)
-    st = source_type.lower() if source_type else ""
-    is_sharepoint = st == "sharepoint" or "sharepoint" in relative_path.lower()
-    is_wiki = st == "wiki" or "wiki" in relative_path.lower()
-
-    if is_sharepoint and SHAREPOINT_BASE_URL:
-        return f"{SHAREPOINT_BASE_URL}/{quote(relative_path, safe='/')}"
-    if is_wiki and WIKI_BASE_URL:
-        return f"{WIKI_BASE_URL}/{quote(relative_path, safe='/')}"
-
-    # Fallback: URL-encode the relative path so spaces don't break markdown links
-    return quote(relative_path, safe="/")
-
-
 def _build_sources(documents: List[Dict]) -> List[Source]:
     """Convert raw search results into Source dicts with preview text."""
     sources = []
@@ -255,10 +217,12 @@ def _build_sources(documents: List[Dict]) -> List[Source]:
         if len(content) > 200:
             preview += "..."
 
+        raw_url = d.get("source_url", "")
+        safe_url = quote(raw_url, safe="/:@?&#=") if raw_url else ""
         sources.append(Source(
             index=i + 1,
             title=d.get("document_title") or d.get("file_name") or "Untitled",
-            url=_normalize_source_url(d.get("source_url", ""), d.get("source_type", "")),
+            url=safe_url,
             source_type=d.get("source_type", ""),
             file_name=d.get("file_name", ""),
             page_number=d.get("page_number", 0),
