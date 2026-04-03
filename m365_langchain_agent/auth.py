@@ -34,6 +34,9 @@ AI_VA_ADMINS_GROUP_ID = os.environ.get("AI_VA_ADMINS_GROUP_ID", "")
 
 # Session cookie settings
 SESSION_COOKIE_NAME = "m365_sso_session"
+SIGNED_OUT_COOKIE_NAME = "m365_sso_signed_out"
+CHAINLIT_AUTH_COOKIE_NAME = os.environ.get("CHAINLIT_AUTH_COOKIE_NAME", "access_token")
+CHAINLIT_SESSION_COOKIE_NAME = "X-Chainlit-Session-id"
 SESSION_MAX_AGE = int(os.environ.get("SESSION_MAX_AGE", "28800"))  # 8 hours absolute max
 SESSION_IDLE_TIMEOUT = int(os.environ.get("SESSION_IDLE_TIMEOUT", "900"))  # 15 min idle default
 # Set secure=True only for HTTPS redirect URIs (allows HTTP for local dev)
@@ -133,7 +136,7 @@ def get_user_from_request(request: Request) -> Optional[Dict]:
     return user_data
 
 
-def build_auth_url(state: str) -> str:
+def build_auth_url(state: str, prompt: Optional[str] = None) -> str:
     """Build the Entra ID authorization URL for OIDC login.
 
     Args:
@@ -152,6 +155,7 @@ def build_auth_url(state: str) -> str:
         scopes=scopes,
         state=state,
         redirect_uri=ENTRA_REDIRECT_URI,
+        prompt=prompt,
     )
 
     return auth_url
@@ -237,7 +241,8 @@ def login_route(request: Request) -> RedirectResponse:
     Generates a random state, stores it in a temporary cookie, and redirects to Entra ID.
     """
     state = secrets.token_urlsafe(32)
-    auth_url = build_auth_url(state)
+    prompt = request.query_params.get("prompt")
+    auth_url = build_auth_url(state, prompt=prompt)
 
     response = RedirectResponse(url=auth_url)
     # Store state in a cookie for validation in callback
@@ -268,22 +273,22 @@ def callback_route(request: Request) -> RedirectResponse:
     if error:
         error_desc = request.query_params.get("error_description", "Unknown error")
         logger.error(f"[Auth] OAuth error: {error}: {error_desc}")
-        return RedirectResponse(url="/auth/error?message=" + error_desc)
+        return RedirectResponse(url="/chat/auth/error?message=" + error_desc)
 
     if not code or not state:
         logger.error("[Auth] Missing code or state in callback")
-        return RedirectResponse(url="/auth/error?message=Missing authorization code")
+        return RedirectResponse(url="/chat/auth/error?message=Missing authorization code")
 
     # Validate state (CSRF protection)
     stored_state = request.cookies.get("oauth_state")
     if not stored_state or stored_state != state:
         logger.error(f"[Auth] State mismatch: stored={stored_state}, received={state}")
-        return RedirectResponse(url="/auth/error?message=State validation failed")
+        return RedirectResponse(url="/chat/auth/error?message=State validation failed")
 
     # Exchange code for tokens
     user_data = handle_callback(code, state)
     if not user_data:
-        return RedirectResponse(url="/auth/error?message=Authentication failed")
+        return RedirectResponse(url="/chat/auth/error?message=Authentication failed")
 
     # Create session cookie
     session_value = create_session_cookie(user_data)
@@ -300,6 +305,9 @@ def callback_route(request: Request) -> RedirectResponse:
 
     # Clear the state cookie
     response.delete_cookie(key="oauth_state")
+    response.delete_cookie(key=SIGNED_OUT_COOKIE_NAME)
+    response.delete_cookie(key=CHAINLIT_AUTH_COOKIE_NAME)
+    response.delete_cookie(key=CHAINLIT_SESSION_COOKIE_NAME)
 
     logger.info(f"[Auth] Login successful: oid={user_data['oid']}, email={user_data['email']}")
     return response
@@ -311,14 +319,26 @@ def logout_route(request: Request) -> RedirectResponse:
     Clears the session cookie and redirects to Entra ID logout endpoint
     to clear the SSO session.
     """
-    # Build post-logout redirect (back to login)
+    # Land on a signed-out page first so users are clearly logged out
+    # and can re-initiate SSO with an account picker prompt.
     base_url = str(request.base_url).rstrip("/")
-    post_logout_uri = f"{base_url}/chat/auth/login"
+    post_logout_uri = f"{base_url}/chat/auth/signed-out"
 
     logout_url = build_logout_url(post_logout_uri)
 
     response = RedirectResponse(url=logout_url)
     response.delete_cookie(key=SESSION_COOKIE_NAME)
+    response.delete_cookie(key="oauth_state")
+    response.delete_cookie(key=CHAINLIT_AUTH_COOKIE_NAME)
+    response.delete_cookie(key=CHAINLIT_SESSION_COOKIE_NAME)
+    response.set_cookie(
+        key=SIGNED_OUT_COOKIE_NAME,
+        value="1",
+        max_age=600,
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite="lax",
+    )
 
     logger.info("[Auth] User logged out")
     return response

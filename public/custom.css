@@ -20,6 +20,46 @@ header > div > div:last-child > button,
     display: none !important;
 }
 
+/* Dedicated SSO logout button shown in the header. */
+#sso-logout-button {
+    position: fixed;
+    top: 14px;
+    right: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 84px;
+    height: 36px;
+    padding: 0 14px;
+    border: 1px solid #d0d5dd;
+    border-radius: 10px;
+    background: #ffffff;
+    color: #344054;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1;
+    text-decoration: none;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+    z-index: 1000;
+}
+
+#sso-logout-button:hover {
+    border-color: #98a2b3;
+    background: #f8fafc;
+    color: #1570ef;
+}
+
+@media (max-width: 768px) {
+    #sso-logout-button {
+        top: 10px;
+        right: 12px;
+        min-width: 76px;
+        height: 34px;
+        padding: 0 12px;
+        font-size: 13px;
+    }
+}
+
 /* Hide the theme toggle (sun/moon icon) in top-right. */
 button:has(svg.lucide-sun),
 button:has(svg.lucide-moon),
@@ -75,52 +115,232 @@ button[aria-label*="negative" i] {
     display: none !important;
 }
 
-/* ===== Starter Prompt Cards ===== */
-.cl-starter-prompts-container {
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin: 6px 0 8px;
+/* ==========================================================
+   Copilot-Style Starter Prompt Cards
+   Targets Chainlit's native #starters container.
+   JS enhances each button with icon + title/desc structure.
+   Chainlit handles show/hide lifecycle (empty state only).
+
+   Key: override ALL conflicting Tailwind utilities from
+   Chainlit's React components (whitespace-nowrap, truncate,
+   w-fit, rounded-3xl, disabled:pointer-events-none, etc.)
+   ========================================================== */
+
+/* ── Welcome screen: ensure starters are visible & not clipped ── */
+#welcome-screen {
+    overflow: visible !important;
 }
 
-.cl-starter-prompt-card {
-    width: 100%;
-    min-height: 0;
-    padding: 10px 14px;
-    border: 1px solid #d0d5dd !important;
-    border-radius: 12px !important;
-    background: #f8fafc !important;
+/* ── Grid layout (overrides Tailwind flex-wrap) ── */
+#starters,
+#starters.starter-cards-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 12px !important;
+    width: 100% !important;
+    max-width: 700px !important;
+    justify-content: stretch !important;
+    flex-wrap: unset !important;
+    padding: 4px 0 !important;
+    /* Ensure starters are above any overlapping element */
+    position: relative !important;
+    z-index: 10 !important;
+}
+
+/* ── Individual starter button → large rounded card ── */
+#starters button[id^="starter-"],
+#starters .starter-card {
+    /* Layout */
+    display: flex !important;
+    align-items: flex-start !important;
+    gap: 12px !important;
+    width: 100% !important;
+    max-width: none !important;         /* override Tailwind w-fit */
+    height: auto !important;            /* expand with content, not fixed */
+    min-height: 80px !important;
+    padding: 16px 18px !important;
+    /* Box model */
+    border: 1px solid #e4e7ec !important;
+    border-radius: 16px !important;     /* override rounded-3xl */
+    background: #ffffff !important;
+    overflow: visible !important;       /* never clip card content */
+    box-sizing: border-box !important;
+    /* Typography */
     color: #344054 !important;
     text-align: left !important;
-    font-size: 13px !important;
+    font-family: inherit !important;
+    font-size: 14px !important;
     font-weight: 500 !important;
-    line-height: 1.35 !important;
+    line-height: 1.45 !important;
+    white-space: normal !important;     /* override whitespace-nowrap */
+    word-break: break-word !important;
+    text-overflow: unset !important;    /* override truncate */
+    /* Interactivity — CRITICAL: override disabled:pointer-events-none */
     cursor: pointer !important;
-    white-space: normal !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: flex-start !important;
-    gap: 10px !important;
-    box-shadow: none;
-    transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+    pointer-events: auto !important;
+    opacity: 1 !important;             /* override disabled:opacity-50 */
+    /* Effects */
+    box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04) !important;
+    transition: border-color 0.2s ease, background-color 0.2s ease,
+                box-shadow 0.2s ease, transform 0.15s ease !important;
 }
 
-.cl-starter-prompt-card:hover {
-    border-color: #98a2b3 !important;
-    background: #eff8ff !important;
-    color: #1570ef !important;
+/* Hover */
+#starters button[id^="starter-"]:hover,
+#starters .starter-card:hover {
+    border-color: #84caff !important;
+    background: #f0f7ff !important;
+    box-shadow: 0 4px 12px rgba(21, 112, 239, 0.12), 0 1px 3px rgba(21, 112, 239, 0.08) !important;
+    transform: translateY(-1px);
 }
 
-.cl-starter-prompt-card:focus-visible {
+/* Active press */
+#starters button[id^="starter-"]:active,
+#starters .starter-card:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06) !important;
+}
+
+/* Keyboard focus */
+#starters button[id^="starter-"]:focus-visible,
+#starters .starter-card:focus-visible {
     outline: 2px solid #1570ef !important;
     outline-offset: 2px !important;
 }
 
+/* ── Override truncate on native label <p> ── */
+#starters button[id^="starter-"] p {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    font-size: 13.5px !important;
+    line-height: 1.45 !important;
+    color: #344054 !important;
+    max-width: 100% !important;
+}
+
+#starters button[id^="starter-"]:hover p {
+    color: #1570ef !important;
+}
+
+/* Also override the inner flex div that Chainlit wraps label in */
+#starters button[id^="starter-"] > div {
+    white-space: normal !important;
+    overflow: visible !important;
+    flex-wrap: wrap !important;
+    max-width: 100% !important;
+}
+
+/* ── Card sub-elements (injected by JS enhancer) ── */
+
+.starter-card-icon {
+    flex-shrink: 0;
+    font-size: 20px;
+    line-height: 1;
+    margin-top: 2px;
+}
+
+.starter-card-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    overflow: visible;
+}
+
+.starter-card-title {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: #1d2939;
+    white-space: normal;
+    word-break: break-word;
+}
+
+.starter-card-desc {
+    font-size: 12.5px;
+    font-weight: 400;
+    line-height: 1.4;
+    color: #667085;
+    white-space: normal;
+    word-break: break-word;
+}
+
+.starter-card-text {
+    font-size: 13.5px;
+    line-height: 1.45;
+    color: #344054;
+    white-space: normal;
+    word-break: break-word;
+}
+
+#starters button[id^="starter-"]:hover .starter-card-title,
+#starters button[id^="starter-"]:hover .starter-card-text {
+    color: #1570ef;
+}
+
+#starters button[id^="starter-"]:hover .starter-card-desc {
+    color: #528bff;
+}
+
+/* ── Responsive: single column on narrow screens ── */
 @media (max-width: 768px) {
-    .cl-starter-prompt-card {
-        padding: 12px 16px;
+    #starters,
+    #starters.starter-cards-grid {
+        grid-template-columns: 1fr !important;
     }
+    #starters button[id^="starter-"],
+    #starters .starter-card {
+        min-height: 64px !important;
+        padding: 14px 16px !important;
+    }
+}
+
+/* --- Thinking Accordion (inline progress indicator) --- */
+.thinking-accordion {
+    border: none;
+    margin: 0 0 4px;
+    background: transparent;
+}
+
+.thinking-summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 13px;
+    color: #667085;
+    list-style: none;
+    padding: 2px 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    user-select: none;
+}
+
+.thinking-summary::before {
+    content: "▶";
+    font-size: 9px;
+    transition: transform 0.2s ease;
+    display: inline-block;
+}
+
+.thinking-accordion[open] > .thinking-summary::before {
+    transform: rotate(90deg);
+}
+
+.thinking-summary::-webkit-details-marker {
+    display: none;
+}
+
+.thinking-body {
+    padding: 4px 0 4px 18px;
+    font-size: 13px;
+    color: #667085;
+    line-height: 1.6;
+}
+
+.thinking-error {
+    color: #d92d20;
 }
 
 /* --- Debug Accordion Styles --- */
@@ -267,32 +487,6 @@ button[aria-label*="negative" i] {
     color: #1570ef;
 }
 
-.suggestion-chip-copy {
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border: 1px solid #e4e7ec;
-    border-radius: 6px;
-    background: #ffffff;
-    color: #667085;
-    cursor: pointer;
-    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-
-.suggestion-chip-copy:hover {
-    background: #f2f4f7;
-    color: #344054;
-    border-color: #d0d5dd;
-}
-
-.suggestion-chip-copy.copied {
-    color: #12b76a;
-    border-color: #12b76a;
-}
 
 /* Hide all message-level action buttons for Explore Further blocks. */
 .suggestion-step .buttons button,
@@ -319,37 +513,6 @@ button[title*="clipboard" i],
     }
 }
 
-/* Dedicated starter tray below the composer, Copilot-style. */
-#starter-prompts-fixed-tray {
-    display: none;
-}
-
-.starter-prompts-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
-    width: 100%;
-}
-
-.starter-prompts-grid .starter-chip {
-    min-height: 84px;
-    align-items: flex-start;
-    justify-content: flex-start;
-    padding: 14px 16px;
-    background: #ffffff;
-    box-shadow: 0 4px 12px rgba(16, 24, 40, 0.08);
-}
-
-.starter-prompts-grid .starter-chip-text {
-    white-space: normal;
-    line-height: 1.4;
-}
-
-@media (max-width: 1024px) {
-    .starter-prompts-grid {
-        grid-template-columns: 1fr;
-    }
-}
 
 /* Make the assistant logo fill the avatar slot more cleanly. */
 img[alt^="Avatar for"] {

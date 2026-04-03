@@ -219,8 +219,13 @@ async def starter_prompts():
     except json.JSONDecodeError:
         logger.warning("[App] STARTER_PROMPTS is not valid JSON")
         return {"prompts": []}
-    prompts = [item.get("message", "").strip() for item in items if isinstance(item, dict)]
-    prompts = [p for p in prompts if p]
+    prompts = []
+    for item in items:
+        if isinstance(item, dict) and item.get("message", "").strip():
+            prompts.append({
+                "label": item.get("label", item["message"]).strip(),
+                "message": item["message"].strip(),
+            })
     return {"prompts": prompts}
 
 
@@ -342,6 +347,28 @@ async def auth_error(request: Request):
     )
 
 
+@app.get("/chat/auth/signed-out")
+async def auth_signed_out():
+    """Signed-out landing page with explicit re-login action."""
+    return Response(
+        content=(
+            "<html><body style='font-family: Inter, Arial, sans-serif; padding: 32px;'>"
+            "<h1>Signed out</h1>"
+            "<p>You have been signed out of the application and the Entra SSO session.</p>"
+            "<script>"
+            "try { localStorage.clear(); } catch (e) {}"
+            "try { sessionStorage.clear(); } catch (e) {}"
+            "</script>"
+            "<p><a href='/chat/auth/login?prompt=login' "
+            "style='display:inline-block;padding:10px 16px;border:1px solid #d0d5dd;"
+            "border-radius:10px;text-decoration:none;color:#344054;font-weight:600;'>"
+            "Sign in again</a></p>"
+            "</body></html>"
+        ),
+        media_type="text/html",
+    )
+
+
 # ---------------------------------------------------------------------------
 # SSO Middleware (protects /chat/ routes in Chainlit UI mode)
 # ---------------------------------------------------------------------------
@@ -377,6 +404,7 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
             from m365_langchain_agent.auth import (
                 get_user_from_request, create_session_cookie,
                 SESSION_COOKIE_NAME, SESSION_IDLE_TIMEOUT, SESSION_COOKIE_SECURE,
+                SIGNED_OUT_COOKIE_NAME,
             )
 
             user = get_user_from_request(request)
@@ -409,7 +437,10 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
                     or path in self._PASSTHROUGH_EXACT
                 )
                 if not is_passthrough:
-                    return RedirectResponse(url="/chat/auth/login?next=/chat/")
+                    login_url = "/chat/auth/login?next=/chat/"
+                    if request.cookies.get(SIGNED_OUT_COOKIE_NAME) == "1":
+                        login_url += "&prompt=login"
+                    return RedirectResponse(url=login_url)
 
         response = await call_next(request)
         return response
