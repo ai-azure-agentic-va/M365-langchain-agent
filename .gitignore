@@ -10,3 +10,4 @@ venv/
 .pytest_cache/
 .chainlit/
 .files/
+scripts/setup-sso-env.sh
