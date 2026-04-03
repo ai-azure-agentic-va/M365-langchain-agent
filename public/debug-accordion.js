@@ -418,6 +418,52 @@
     }
   }
 
+  // ─── Logout button ─────────────────────────────────────────
+
+  function addLogoutButton() {
+    // Check if logout button already exists
+    if (document.getElementById("custom-logout-btn")) return;
+
+    // Try multiple selectors to find a suitable container
+    var container = document.querySelector("header") ||
+                   document.querySelector("nav") ||
+                   document.querySelector("[role='banner']") ||
+                   document.body.firstElementChild;
+
+    if (!container) {
+      console.warn("[Logout] Could not find container for logout button");
+      return;
+    }
+
+    // Create logout button
+    var logoutBtn = document.createElement("button");
+    logoutBtn.id = "custom-logout-btn";
+    logoutBtn.textContent = "Logout";
+    logoutBtn.style.cssText =
+      "position: fixed; right: 20px; top: 20px; " +
+      "padding: 8px 16px; background: #ef4444; color: white; border: none; " +
+      "border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; " +
+      "transition: background 0.15s ease; z-index: 9999; box-shadow: 0 2px 8px rgba(0,0,0,0.15);";
+
+    // Hover effect
+    logoutBtn.addEventListener("mouseenter", function () {
+      logoutBtn.style.background = "#dc2626";
+    });
+    logoutBtn.addEventListener("mouseleave", function () {
+      logoutBtn.style.background = "#ef4444";
+    });
+
+    // Click handler - redirect to logout endpoint
+    logoutBtn.addEventListener("click", function () {
+      console.log("[Logout] Redirecting to logout...");
+      window.location.href = "/auth/logout";
+    });
+
+    // Append to body for guaranteed visibility
+    document.body.appendChild(logoutBtn);
+    console.log("[Logout] Logout button added successfully");
+  }
+
   // ─── Main loop ─────────────────────────────────────────────
 
   function applyUiUpdates() {
@@ -428,6 +474,7 @@
     renderStarterPromptsBelowInput();
     positionStarterChipsBelowInput();
     enhanceSuggestionChips();
+    addLogoutButton();
   }
 
   function scheduleApply() {

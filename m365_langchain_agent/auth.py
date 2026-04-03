@@ -223,6 +223,7 @@ def build_logout_url(post_logout_redirect_uri: str) -> str:
         Logout URL
     """
     params = {
+        "client_id": ENTRA_CLIENT_ID,
         "post_logout_redirect_uri": post_logout_redirect_uri,
     }
     logout_url = f"https://login.microsoftonline.com/{ENTRA_TENANT_ID}/oauth2/v2.0/logout"
@@ -318,7 +319,23 @@ def logout_route(request: Request) -> RedirectResponse:
     logout_url = build_logout_url(post_logout_uri)
 
     response = RedirectResponse(url=logout_url)
-    response.delete_cookie(key=SESSION_COOKIE_NAME)
 
-    logger.info("[Auth] User logged out")
+    # Delete session cookie with all possible path variations to ensure it's cleared
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        secure=SESSION_COOKIE_SECURE,
+        httponly=True,
+        samesite="lax"
+    )
+    # Also delete any oauth_state cookie that might still exist
+    response.delete_cookie(
+        key="oauth_state",
+        path="/",
+        secure=SESSION_COOKIE_SECURE,
+        httponly=True,
+        samesite="lax"
+    )
+
+    logger.info("[Auth] User logged out, cookies cleared")
     return response
