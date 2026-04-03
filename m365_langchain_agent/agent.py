@@ -26,7 +26,6 @@ from m365_langchain_agent.utils.search import get_search_client
 
 logger = logging.getLogger(__name__)
 
-# Shared credential + token provider for Azure OpenAI (Managed Identity)
 _credential = DefaultAzureCredential()
 _token_provider = get_bearer_token_provider(_credential, "https://cognitiveservices.azure.com/.default")
 
@@ -143,10 +142,6 @@ def _is_sttm_query(query: str) -> bool:
     return any(kw in q for kw in _STTM_KEYWORDS)
 
 
-# ---------------------------------------------------------------------------
-# STTM hop-by-hop search — Phase 2 agentic retrieval
-# ---------------------------------------------------------------------------
-# The four canonical STTM layer transitions, in pipeline order.
 _STTM_HOPS = [
     ("landing", "raw"),
     ("raw", "int"),
@@ -154,8 +149,6 @@ _STTM_HOPS = [
     ("cur", "asl"),
 ]
 
-# Keywords that signal a multi-hop / end-to-end lineage question (vs. a
-# single-hop or general STTM question).  Substring matching on lowered query.
 _STTM_MULTIHOP_SIGNALS = frozenset({
     "end to end", "end-to-end", "all layers", "all hops", "through all",
     "across layers", "across hops", "full lineage", "complete lineage",
@@ -173,10 +166,8 @@ def _detect_sttm_hops(query: str) -> list[tuple[str, str]]:
     """
     q = query.lower()
 
-    # Explicit hop mentions → collect exactly those hops
     explicit: list[tuple[str, str]] = []
     for src, tgt in _STTM_HOPS:
-        # Match patterns like "raw to int", "raw → int", "raw->int", "raw-to-int"
         patterns = [
             f"{src} to {tgt}",
             f"{src}-to-{tgt}",
@@ -190,11 +181,9 @@ def _detect_sttm_hops(query: str) -> list[tuple[str, str]]:
     if explicit:
         return explicit
 
-    # Multi-hop signal words → return all hops for end-to-end lineage
     if any(signal in q for signal in _STTM_MULTIHOP_SIGNALS):
         return list(_STTM_HOPS)
 
-    # No hop-specific intent detected
     return []
 
 
@@ -229,9 +218,6 @@ def _sttm_hop_search(
             results = search_client.search(hop_query, top_k=top_k_per_hop)
             new_count = 0
             for doc in results:
-                # Dedup by content hash to avoid exact duplicate chunks across
-                # hop searches, but allow multiple chunks from the same source
-                # document (critical for STTM where one workbook has many hops).
                 doc_id = doc.get("content", "")[:200]
                 if doc_id not in seen_ids:
                     seen_ids.add(doc_id)
@@ -244,7 +230,6 @@ def _sttm_hop_search(
         except Exception as e:
             logger.warning(f"[Agent] STTM hop search {src}→{tgt} failed: {e}")
 
-    # Sort by relevance — prefer reranker score, fall back to hybrid score
     all_chunks.sort(
         key=lambda d: (d.get("reranker_score") or 0, d.get("score", 0)),
         reverse=True,
@@ -271,18 +256,9 @@ DEFAULT_TOP_K = int(os.environ.get("DEFAULT_TOP_K", "5"))
 DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", "0.2"))
 DEFAULT_MODEL = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
 
-# Retrieval quality gate — minimum reranker score to proceed with LLM generation.
-# Azure AI Search semantic reranker scores range 0–4.  Below this threshold the
-# top result is likely irrelevant, so we short-circuit instead of generating a
-# confidently wrong answer.  Tune via env var; set to 0 to disable the gate.
 RETRIEVAL_SCORE_THRESHOLD = float(os.environ.get("RETRIEVAL_SCORE_THRESHOLD", "1.2"))
 
-_NO_RESULTS_ANSWER = (
-    "This question appears to be outside the scope of the knowledge base. "
-    "I can only answer based on available documentation. "
-    "Try rephrasing your question or asking about a specific topic covered in the knowledge base."
-)
-_LOW_CONFIDENCE_ANSWER = (
+_OUT_OF_SCOPE_ANSWER = (
     "This question appears to be outside the scope of the knowledge base. "
     "I can only answer based on available documentation. "
     "Try rephrasing your question or asking about a specific topic covered in the knowledge base."
@@ -297,7 +273,6 @@ def _is_reasoning_model(deployment: str) -> bool:
 def _build_llm(temperature: float = None, model_name: str = None) -> AzureChatOpenAI:
     """Create the Azure OpenAI LLM client with configurable parameters."""
     deployment = model_name or DEFAULT_MODEL
-    # Reasoning models (o1, o3) require a newer API version and don't support temperature
     api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
     is_reasoning = _is_reasoning_model(deployment)
     if is_reasoning:
@@ -312,10 +287,6 @@ def _build_llm(temperature: float = None, model_name: str = None) -> AzureChatOp
         kwargs["temperature"] = temperature if temperature is not None else DEFAULT_TEMPERATURE
     return AzureChatOpenAI(**kwargs)
 
-
-
-SHAREPOINT_BASE_URL = os.environ.get("SHAREPOINT_BASE_URL", "")
-WIKI_BASE_URL = os.environ.get("WIKI_BASE_URL", "")
 
 
 def _extract_section_label(content: str) -> Optional[str]:
@@ -378,7 +349,6 @@ def _build_sources(documents: List[Dict]) -> List[Source]:
             section_label = _extract_section_label(content)
             if section_label:
                 title = f"{base_title} — {section_label}"
-            # else: just use base_title (no Part X/Y, no chunk index)
 
         sources.append(Source(
             index=i + 1,
@@ -437,12 +407,10 @@ async def generate_suggested_prompts(
     ]
 
     try:
-        # Prefer mini model for cost (~$0.0003/call); fall back to caller's model
         suggestion_model = model_name or DEFAULT_MODEL
         llm = _build_llm(temperature=0.7, model_name=suggestion_model)
         response = await llm.ainvoke(messages)
         lines = [line.strip() for line in response.content.strip().split("\n") if line.strip()]
-        # Take exactly 3, strip any numbering artifacts
         suggestions = []
         for line in lines[:3]:
             # Remove leading "1.", "- ", "• " etc.
@@ -516,11 +484,9 @@ async def _rewrite_query_with_history(
     if not conversation_history:
         return query
 
-    # Build a compact history summary (last 2 exchanges)
     history_lines = []
     for turn in conversation_history[-4:]:
         role = "User" if turn["role"] == "user" else "Assistant"
-        # Truncate long assistant responses to save tokens
         content = turn["content"][:300] if turn["role"] == "assistant" else turn["content"]
         history_lines.append(f"{role}: {content}")
 
@@ -566,7 +532,6 @@ def _format_context(documents: List[Dict], all_document_names: List[str] = None)
     if not documents:
         return "No documents found."
 
-    # Add disambiguation hint when results span multiple source files
     unique_sources = _get_unique_source_names(documents)
     hint = ""
     if len(unique_sources) > 1:
@@ -641,22 +606,18 @@ async def invoke_agent(
     effective_top_k = top_k if top_k is not None else DEFAULT_TOP_K
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
-    # STTM routing — specialized prompt + higher top_k for data lineage queries
     is_sttm = _is_sttm_query(query)
     if is_sttm and not system_prompt:
         effective_prompt = STTM_SYSTEM_PROMPT
         effective_top_k = max(effective_top_k, STTM_TOP_K)
         logger.info(f"[Agent] STTM query detected — using STTM prompt, top_k={effective_top_k}")
 
-    # 0. Rewrite query using conversation context (for follow-up questions)
     search_query = query
     if conversation_history:
         search_query = await _rewrite_query_with_history(query, conversation_history, model_name)
 
-    # 1. Retrieve documents from Azure AI Search (using rewritten query)
     search_client = get_search_client()
 
-    # --- STTM hop-by-hop search (Phase 2 agentic retrieval) ---
     sttm_hops = _detect_sttm_hops(query) if is_sttm else []
     if sttm_hops:
         logger.info(f"[Agent] STTM hop-by-hop mode: {len(sttm_hops)} hops detected")
@@ -667,14 +628,12 @@ async def invoke_agent(
         logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}, sttm={is_sttm}) for: {search_query[:100]}")
         documents = raw_documents
 
-    # --- Quality gate: zero results ---
     if not documents:
         logger.info("[Agent] Quality gate: zero results — skipping LLM")
         return AgentResult(
-            answer=_NO_RESULTS_ANSWER, sources=[], raw_chunks=[], full_prompt=""
+            answer=_OUT_OF_SCOPE_ANSWER, sources=[], raw_chunks=[], full_prompt=""
         )
 
-    # --- Quality gate: low relevance → re-search once (Phase 3) ---
     if not sttm_hops:
         original_score = max(
             (d.get("reranker_score") or d.get("score", 0)) for d in documents
@@ -710,11 +669,9 @@ async def invoke_agent(
 
         if decision == "blocked":
             return AgentResult(
-                answer=_LOW_CONFIDENCE_ANSWER, sources=[], raw_chunks=raw_documents, full_prompt=""
+                answer=_OUT_OF_SCOPE_ANSWER, sources=[], raw_chunks=raw_documents, full_prompt=""
             )
 
-    # 2b. Document discovery — get full list of matching doc names via faceting
-    #     so the LLM can list ALL relevant docs, not just the retrieved subset
     all_doc_names = None
     unique_sources = _get_unique_source_names(raw_documents)
     if len(unique_sources) > 1:
@@ -725,16 +682,12 @@ async def invoke_agent(
                 f"(retrieved {len(unique_sources)})"
             )
 
-    # 3. Build context from ALL chunks (not deduped) — LLM needs full context
-    #    Sources for citation display use deduped list
     context = _format_context(raw_documents, all_document_names=all_doc_names)
     sources = _build_sources(raw_documents)
 
-    # 4. Build message history for the LLM
     messages = [SystemMessage(content=effective_prompt)]
-
     if conversation_history:
-        for turn in conversation_history[-6:]:  # Last 3 exchanges max
+        for turn in conversation_history[-6:]:
             if turn["role"] == "user":
                 messages.append(HumanMessage(content=turn["content"]))
             elif turn["role"] == "assistant":
@@ -747,16 +700,12 @@ Documents:
 
 Answer:"""
     messages.append(HumanMessage(content=user_prompt))
-
-    # Capture the full prompt for debug visibility
     full_prompt = f"=== SYSTEM PROMPT ===\n{effective_prompt}\n\n=== USER PROMPT (with context) ===\n{user_prompt}"
 
-    # 5. Generate answer
     llm = _build_llm(temperature=temperature, model_name=model_name)
     try:
         response = await llm.ainvoke(messages)
         answer = response.content
-        # Only return sources that the LLM actually cited in its answer
         cited_sources = _filter_cited_sources(answer, sources)
         logger.info(
             f"[Agent] Generated answer, length={len(answer)}, model={model_name or DEFAULT_MODEL}, "
@@ -790,7 +739,6 @@ async def invoke_agent_stream(
     effective_top_k = top_k if top_k is not None else DEFAULT_TOP_K
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
-    # STTM routing — specialized prompt + higher top_k for data lineage queries
     is_sttm = _is_sttm_query(query)
     if is_sttm and not system_prompt:
         effective_prompt = STTM_SYSTEM_PROMPT
@@ -807,7 +755,6 @@ async def invoke_agent_stream(
 
     search_client = get_search_client()
 
-    # --- STTM hop-by-hop search (Phase 2 agentic retrieval) ---
     sttm_hops = _detect_sttm_hops(query) if is_sttm else []
     if sttm_hops:
         logger.info(f"[Agent] STTM hop-by-hop mode: {len(sttm_hops)} hops detected")
@@ -817,13 +764,12 @@ async def invoke_agent_stream(
         raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
         documents = raw_documents
 
-    # --- Quality gate: zero results ---
     if not documents:
         logger.info("[Agent] Quality gate: zero results — skipping LLM")
         yield {"type": "event", "event": "search_complete", "sources": 0}
         yield {
             "type": "metadata",
-            "answer": _NO_RESULTS_ANSWER,
+            "answer": _OUT_OF_SCOPE_ANSWER,
             "sources": [],
             "raw_chunks": [],
             "full_prompt": "",
@@ -833,7 +779,6 @@ async def invoke_agent_stream(
         }
         return
 
-    # --- Quality gate: low relevance → re-search once (Phase 3) ---
     search_event_emitted = False
     if not sttm_hops:
         original_score = max(
@@ -880,7 +825,7 @@ async def invoke_agent_stream(
         if decision == "blocked":
             yield {
                 "type": "metadata",
-                "answer": _LOW_CONFIDENCE_ANSWER,
+                "answer": _OUT_OF_SCOPE_ANSWER,
                 "sources": [],
                 "raw_chunks": raw_documents,
                 "full_prompt": "",
@@ -890,7 +835,6 @@ async def invoke_agent_stream(
             }
             return
 
-    # Document discovery — full list of matching doc names via faceting
     all_doc_names = None
     unique_sources = _get_unique_source_names(raw_documents)
     if len(unique_sources) > 1:
@@ -967,12 +911,10 @@ def _filter_cited_sources(answer: str, sources: List[Source]) -> List[Source]:
     Parses [1], [2], etc. from the answer text. If no citations are found,
     returns all sources as fallback (the LLM may have used prose references).
     """
-    # Only match small numbers [1]-[99] to avoid false positives like [401] tax codes
     cited_indices = set(int(m) for m in re.findall(r"\[(\d{1,2})\]", answer))
     if not cited_indices:
         return sources
     filtered = [s for s in sources if s.get("index") in cited_indices]
-    # If parsed indices didn't match any actual source, fall back to all sources
     return filtered if filtered else sources
 
 

@@ -20,16 +20,7 @@ class DocAgentBot(ActivityHandler):
     """Bot that handles incoming messages and routes them to the RAG agent."""
 
     async def on_message_activity(self, turn_context: TurnContext) -> None:
-        """Handle incoming user messages.
-
-        Flow:
-            1. Extract user text from the Activity
-            2. Load conversation history from CosmosDB
-            3. Invoke the LangChain RAG agent
-            4. Format answer with clickable source links
-            5. Save the turn to CosmosDB
-            6. Send the response back to the user
-        """
+        """Handle incoming user messages."""
         user_text = turn_context.activity.text
         if not user_text or not user_text.strip():
             await turn_context.send_activity("I didn't receive a message. Please try again.")
@@ -41,10 +32,8 @@ class DocAgentBot(ActivityHandler):
             f"text={user_text[:100]}"
         )
 
-        # Send typing indicator while processing
         await turn_context.send_activity(Activity(type=ActivityTypes.typing))
 
-        # Load conversation history from CosmosDB
         try:
             cosmos = get_cosmos_store()
             history = cosmos.get_history(conversation_id)
@@ -52,20 +41,13 @@ class DocAgentBot(ActivityHandler):
             logger.error(f"[Bot] CosmosDB read failed: {e}")
             history = []
 
-        # Invoke the LangChain RAG agent — returns structured AgentResult
         result = await invoke_agent(query=user_text, conversation_history=history)
         answer = result["answer"]
         sources = result["sources"]
 
-        # Format sources as markdown links (Teams renders markdown)
         sources_md = format_sources_markdown(sources)
-        if sources_md:
-            full_response = f"{answer}\n\n---\n**Sources:**\n{sources_md}"
-        else:
-            full_response = answer
+        full_response = f"{answer}\n\n---\n**Sources:**\n{sources_md}" if sources_md else answer
 
-        # Save only the answer text (not sources footer) to CosmosDB
-        # so conversation history stays clean for query rewriting
         try:
             cosmos = get_cosmos_store()
             cosmos.save_turn(
@@ -76,7 +58,6 @@ class DocAgentBot(ActivityHandler):
         except Exception as e:
             logger.error(f"[Bot] CosmosDB write failed: {e}")
 
-        # Send the response back
         await turn_context.send_activity(full_response)
         logger.info(
             f"[Bot] Response sent: conversation={conversation_id}, "

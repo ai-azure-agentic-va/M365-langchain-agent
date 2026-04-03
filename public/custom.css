@@ -1,16 +1,13 @@
-/* Hide the Logout menu item */
 [role="menuitem"]:has(svg.lucide-log-out),
 [role="menuitem"]:has(svg > path[d*="m16 17 5-5"]),
 [data-radix-collection-item]:last-child {
     display: none !important;
 }
 
-/* Remove "LLMs can make mistakes..." watermark */
 .watermark {
     display: none !important;
 }
 
-/* Hide the user avatar/menu button in top-right header. */
 [data-radix-popper-content-wrapper],
 button[aria-haspopup="menu"],
 header button:last-child,
@@ -20,7 +17,6 @@ header > div > div:last-child > button,
     display: none !important;
 }
 
-/* Dedicated SSO logout button shown in the header. */
 #sso-logout-button {
     position: fixed;
     top: 14px;
@@ -60,7 +56,6 @@ header > div > div:last-child > button,
     }
 }
 
-/* Hide the theme toggle (sun/moon icon) in top-right. */
 button:has(svg.lucide-sun),
 button:has(svg.lucide-moon),
 button:has(svg.lucide-sun-moon),
@@ -73,12 +68,6 @@ button[aria-label*="light" i],
     display: none !important;
 }
 
-/* =============================================
-   Hide feedback / like / dislike controls
-   Keep copy control visible.
-   ============================================= */
-
-/* Target by SVG path data (thumbs up & thumbs down icons) */
 button:has(svg path[d*="M7 10v12"]),
 button:has(svg path[d*="M17 14V2"]),
 button:has(svg path[d*="M14 9V5"]),
@@ -87,7 +76,6 @@ button:has(svg path[d*="M17 2v10"]) {
     display: none !important;
 }
 
-/* Target by aria-label patterns */
 button[aria-label*="like" i],
 button[aria-label*="dislike" i],
 button[aria-label*="feedback" i],
@@ -99,7 +87,6 @@ button[aria-label*="negative" i] {
     display: none !important;
 }
 
-/* Target the entire feedback/action wrappers that are explicitly named feedback. */
 [class*="feedback"],
 [class*="Feedback"],
 [data-testid*="feedback"],
@@ -107,7 +94,6 @@ button[aria-label*="negative" i] {
     display: none !important;
 }
 
-/* Hide all message action toolbar buttons globally (copy/feedback/etc.). */
 .step .buttons button,
 [class*="message-actions"] button,
 [class*="MessageActions"] button,
@@ -115,23 +101,10 @@ button[aria-label*="negative" i] {
     display: none !important;
 }
 
-/* ==========================================================
-   Copilot-Style Starter Prompt Cards
-   Targets Chainlit's native #starters container.
-   JS enhances each button with icon + title/desc structure.
-   Chainlit handles show/hide lifecycle (empty state only).
-
-   Key: override ALL conflicting Tailwind utilities from
-   Chainlit's React components (whitespace-nowrap, truncate,
-   w-fit, rounded-3xl, disabled:pointer-events-none, etc.)
-   ========================================================== */
-
-/* ── Welcome screen: ensure starters are visible & not clipped ── */
 #welcome-screen {
     overflow: visible !important;
 }
 
-/* ── Grid layout (overrides Tailwind flex-wrap) ── */
 #starters,
 #starters.starter-cards-grid {
     display: grid !important;
@@ -142,50 +115,42 @@ button[aria-label*="negative" i] {
     justify-content: stretch !important;
     flex-wrap: unset !important;
     padding: 4px 0 !important;
-    /* Ensure starters are above any overlapping element */
     position: relative !important;
     z-index: 10 !important;
 }
 
-/* ── Individual starter button → large rounded card ── */
 #starters button[id^="starter-"],
 #starters .starter-card {
-    /* Layout */
     display: flex !important;
     align-items: flex-start !important;
     gap: 12px !important;
     width: 100% !important;
-    max-width: none !important;         /* override Tailwind w-fit */
-    height: auto !important;            /* expand with content, not fixed */
+    max-width: none !important;
+    height: auto !important;
     min-height: 80px !important;
     padding: 16px 18px !important;
-    /* Box model */
     border: 1px solid #e4e7ec !important;
-    border-radius: 16px !important;     /* override rounded-3xl */
+    border-radius: 16px !important;
     background: #ffffff !important;
-    overflow: visible !important;       /* never clip card content */
+    overflow: visible !important;
     box-sizing: border-box !important;
-    /* Typography */
     color: #344054 !important;
     text-align: left !important;
     font-family: inherit !important;
     font-size: 14px !important;
     font-weight: 500 !important;
     line-height: 1.45 !important;
-    white-space: normal !important;     /* override whitespace-nowrap */
+    white-space: normal !important;
     word-break: break-word !important;
-    text-overflow: unset !important;    /* override truncate */
-    /* Interactivity — CRITICAL: override disabled:pointer-events-none */
+    text-overflow: unset !important;
     cursor: pointer !important;
     pointer-events: auto !important;
-    opacity: 1 !important;             /* override disabled:opacity-50 */
-    /* Effects */
+    opacity: 1 !important;
     box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04) !important;
     transition: border-color 0.2s ease, background-color 0.2s ease,
                 box-shadow 0.2s ease, transform 0.15s ease !important;
 }
 
-/* Hover */
 #starters button[id^="starter-"]:hover,
 #starters .starter-card:hover {
     border-color: #84caff !important;
@@ -194,21 +159,18 @@ button[aria-label*="negative" i] {
     transform: translateY(-1px);
 }
 
-/* Active press */
 #starters button[id^="starter-"]:active,
 #starters .starter-card:active {
     transform: translateY(0);
     box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06) !important;
 }
 
-/* Keyboard focus */
 #starters button[id^="starter-"]:focus-visible,
 #starters .starter-card:focus-visible {
     outline: 2px solid #1570ef !important;
     outline-offset: 2px !important;
 }
 
-/* ── Override truncate on native label <p> ── */
 #starters button[id^="starter-"] p {
     white-space: normal !important;
     overflow: visible !important;
@@ -223,21 +185,11 @@ button[aria-label*="negative" i] {
     color: #1570ef !important;
 }
 
-/* Also override the inner flex div that Chainlit wraps label in */
 #starters button[id^="starter-"] > div {
     white-space: normal !important;
     overflow: visible !important;
     flex-wrap: wrap !important;
     max-width: 100% !important;
-}
-
-/* ── Card sub-elements (injected by JS enhancer) ── */
-
-.starter-card-icon {
-    flex-shrink: 0;
-    font-size: 20px;
-    line-height: 1;
-    margin-top: 2px;
 }
 
 .starter-card-content {
@@ -284,7 +236,6 @@ button[aria-label*="negative" i] {
     color: #528bff;
 }
 
-/* ── Responsive: single column on narrow screens ── */
 @media (max-width: 768px) {
     #starters,
     #starters.starter-cards-grid {
@@ -297,7 +248,6 @@ button[aria-label*="negative" i] {
     }
 }
 
-/* --- Thinking Accordion (inline progress indicator) --- */
 .thinking-accordion {
     border: none;
     margin: 0 0 4px;
@@ -343,7 +293,6 @@ button[aria-label*="negative" i] {
     color: #d92d20;
 }
 
-/* --- Debug Accordion Styles --- */
 .debug-accordion {
     border: none;
     border-radius: 0;
@@ -380,7 +329,6 @@ button[aria-label*="negative" i] {
     color: #1d2939;
 }
 
-/* Custom arrow indicator */
 .debug-accordion-summary::before {
     content: "▶";
     font-size: 10px;
@@ -392,7 +340,6 @@ button[aria-label*="negative" i] {
     transform: rotate(90deg);
 }
 
-/* Remove default browser arrow */
 .debug-accordion-summary::-webkit-details-marker {
     display: none;
 }
@@ -441,8 +388,6 @@ button[aria-label*="negative" i] {
     word-break: break-word;
 }
 
-/* ===== Suggested Follow-Up Prompt Chips ===== */
-
 .suggestion-chips-container {
     display: flex;
     flex-direction: column;
@@ -487,8 +432,6 @@ button[aria-label*="negative" i] {
     color: #1570ef;
 }
 
-
-/* Hide all message-level action buttons for Explore Further blocks. */
 .suggestion-step .buttons button,
 .suggestion-step [class*="message-actions"] button,
 .suggestion-step [class*="MessageActions"] button,
@@ -496,7 +439,6 @@ button[aria-label*="negative" i] {
     display: none !important;
 }
 
-/* Remove copy actions globally (they copy raw HTML for custom chips). */
 button[aria-label*="copy" i],
 button[title*="copy" i],
 button[aria-label*="clipboard" i],
@@ -506,15 +448,12 @@ button[title*="clipboard" i],
     display: none !important;
 }
 
-/* Mobile: stack chips full-width */
 @media (max-width: 768px) {
     .suggestion-chip {
         padding: 12px 16px;
     }
 }
 
-
-/* Make the assistant logo fill the avatar slot more cleanly. */
 img[alt^="Avatar for"] {
     width: 100% !important;
     height: 100% !important;

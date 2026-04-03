@@ -44,15 +44,11 @@ class CosmosDataLayer(BaseDataLayer):
     async def close(self) -> None:
         pass
 
-    # -- User management (no auth, return a default user) --
-
     async def get_user(self, identifier: str) -> Optional[PersistedUser]:
         return PersistedUser(id=identifier, identifier=identifier, createdAt=_ts_to_iso(time.time()))
 
     async def create_user(self, user: User) -> Optional[PersistedUser]:
         return PersistedUser(id=user.identifier, identifier=user.identifier, createdAt=_ts_to_iso(time.time()))
-
-    # -- Thread listing (sidebar) --
 
     async def list_threads(
         self, pagination: Pagination, filters: ThreadFilter
@@ -61,8 +57,6 @@ class CosmosDataLayer(BaseDataLayer):
         try:
             cosmos = get_cosmos_store()
 
-            # Require an authenticated user for sidebar thread listing.
-            # Never expose all threads to the unauthenticated/default user.
             if filters.userId and filters.userId != "default-user":
                 query = "SELECT * FROM c WHERE c.user_id = @user_id ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
                 params = [
@@ -92,12 +86,10 @@ class CosmosDataLayer(BaseDataLayer):
                 if not messages:
                     continue
 
-                # First user message becomes the thread name
                 first_user_msg = next(
                     (m["content"][:80] for m in messages if m["role"] == "user"), "New chat"
                 )
 
-                # Convert messages to Chainlit StepDicts
                 steps = []
                 for i, msg in enumerate(messages):
                     step_type = "user_message" if msg["role"] == "user" else "assistant_message"
@@ -114,7 +106,6 @@ class CosmosDataLayer(BaseDataLayer):
                         createdAt=_ts_to_iso(created + i),
                     ))
 
-                # Use the actual user_id from the conversation, or fall back to "default-user"
                 user_id = item.get("user_id", "default-user")
 
                 threads.append(ThreadDict(
@@ -165,7 +156,6 @@ class CosmosDataLayer(BaseDataLayer):
                     createdAt=_ts_to_iso(created + i),
                 ))
 
-            # Use the actual user_id from the conversation, or fall back to "default-user"
             user_id = item.get("user_id", "default-user")
 
             return ThreadDict(
@@ -211,8 +201,6 @@ class CosmosDataLayer(BaseDataLayer):
         except Exception as e:
             logger.error(f"[DataLayer] delete_thread failed: {e}")
 
-    # -- Steps (no-op, we save via cosmos_store.save_turn) --
-
     async def create_step(self, step_dict: StepDict) -> None:
         pass
 
@@ -221,8 +209,6 @@ class CosmosDataLayer(BaseDataLayer):
 
     async def delete_step(self, step_id: str) -> None:
         pass
-
-    # -- Elements (not used) --
 
     async def create_element(self, element) -> None:
         pass
@@ -233,15 +219,11 @@ class CosmosDataLayer(BaseDataLayer):
     async def delete_element(self, element_id: str, thread_id: Optional[str] = None) -> None:
         pass
 
-    # -- Feedback (stub) --
-
     async def upsert_feedback(self, feedback: Feedback) -> str:
         return str(uuid.uuid4())
 
     async def delete_feedback(self, feedback_id: str) -> bool:
         return True
-
-    # -- Favorites (stub) --
 
     async def get_favorite_steps(self, user_id: str) -> List[StepDict]:
         return []
