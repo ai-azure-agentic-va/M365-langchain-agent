@@ -374,7 +374,10 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
 
         # Only act on /chat/ routes
         if path.startswith("/chat"):
-            from m365_langchain_agent.auth import get_user_from_request
+            from m365_langchain_agent.auth import (
+                get_user_from_request, create_session_cookie,
+                SESSION_COOKIE_NAME, SESSION_IDLE_TIMEOUT, SESSION_COOKIE_SECURE,
+            )
 
             user = get_user_from_request(request)
 
@@ -385,6 +388,19 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
                 request.scope["headers"].append((b"x-user-name", user["name"].encode()))
                 request.scope["headers"].append((b"x-user-email", (user.get("email") or "").encode()))
                 request.scope["headers"].append((b"x-user-role", user["role"].encode()))
+
+                # Re-issue cookie to reset idle timeout clock
+                response = await call_next(request)
+                cookie_data = {k: v for k, v in user.items() if k != "role"}
+                response.set_cookie(
+                    key=SESSION_COOKIE_NAME,
+                    value=create_session_cookie(cookie_data),
+                    max_age=SESSION_IDLE_TIMEOUT,
+                    httponly=True,
+                    secure=SESSION_COOKIE_SECURE,
+                    samesite="lax",
+                )
+                return response
             else:
                 # Not authenticated — only redirect browser page navigations,
                 # never redirect WebSocket, Socket.IO, or Chainlit API requests

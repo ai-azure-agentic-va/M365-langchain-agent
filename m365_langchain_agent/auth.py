@@ -34,7 +34,8 @@ AI_VA_ADMINS_GROUP_ID = os.environ.get("AI_VA_ADMINS_GROUP_ID", "")
 
 # Session cookie settings
 SESSION_COOKIE_NAME = "m365_sso_session"
-SESSION_MAX_AGE = int(os.environ.get("SESSION_MAX_AGE", "28800"))  # 8 hours default
+SESSION_MAX_AGE = int(os.environ.get("SESSION_MAX_AGE", "28800"))  # 8 hours absolute max
+SESSION_IDLE_TIMEOUT = int(os.environ.get("SESSION_IDLE_TIMEOUT", "900"))  # 15 min idle default
 # Set secure=True only for HTTPS redirect URIs (allows HTTP for local dev)
 SESSION_COOKIE_SECURE = ENTRA_REDIRECT_URI.startswith("https://")
 
@@ -85,16 +86,21 @@ def create_session_cookie(user_data: Dict) -> str:
     return serializer.dumps(user_data)
 
 
-def read_session_cookie(cookie_value: str, max_age: int = SESSION_MAX_AGE) -> Optional[Dict]:
+def read_session_cookie(cookie_value: str, max_age: int = None) -> Optional[Dict]:
     """Read and validate a signed session cookie.
+
+    Uses SESSION_IDLE_TIMEOUT by default — the cookie is re-issued on each
+    request so this effectively enforces an idle timeout.
 
     Args:
         cookie_value: The session cookie value
-        max_age: Maximum age in seconds (default: SESSION_MAX_AGE)
+        max_age: Maximum age in seconds (default: SESSION_IDLE_TIMEOUT)
 
     Returns:
         User data dict if valid, None if invalid/expired
     """
+    if max_age is None:
+        max_age = SESSION_IDLE_TIMEOUT
     try:
         serializer = get_session_serializer()
         user_data = serializer.loads(cookie_value, max_age=max_age)
@@ -286,7 +292,7 @@ def callback_route(request: Request) -> RedirectResponse:
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_value,
-        max_age=SESSION_MAX_AGE,
+        max_age=SESSION_IDLE_TIMEOUT,
         httponly=True,
         secure=SESSION_COOKIE_SECURE,
         samesite="lax",  # CSRF protection
