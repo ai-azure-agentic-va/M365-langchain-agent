@@ -10,6 +10,7 @@ Both modes share /health, /readiness, /test/query endpoints.
 import logging
 import os
 import sys
+import json
 
 from dotenv import load_dotenv
 
@@ -19,6 +20,8 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import RedirectResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from botbuilder.core import (
     BotFrameworkAdapter,
     BotFrameworkAdapterSettings,
@@ -32,6 +35,14 @@ from botframework.connector.auth import (
 from m365_langchain_agent.bot import DocAgentBot
 from m365_langchain_agent.agent import invoke_agent
 from m365_langchain_agent.cosmos_store import get_cosmos_store
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse a boolean environment flag from common truthy values."""
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +205,25 @@ async def readiness():
     }
 
 
+@app.get("/starter-prompts")
+async def starter_prompts():
+    """Return starter prompts configured via env flags and STARTER_PROMPTS JSON."""
+    if not _env_flag("SHOW_STARTER_PROMPTS", default=True):
+        return {"prompts": []}
+
+    raw = os.environ.get("STARTER_PROMPTS", "").strip()
+    if not raw:
+        return {"prompts": []}
+    try:
+        items = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("[App] STARTER_PROMPTS is not valid JSON")
+        return {"prompts": []}
+    prompts = [item.get("message", "").strip() for item in items if isinstance(item, dict)]
+    prompts = [p for p in prompts if p]
+    return {"prompts": prompts}
+
+
 @app.post("/test/query")
 async def test_query(request: Request):
     """Test endpoint — bypasses Bot Framework auth to verify full RAG pipeline.
@@ -277,6 +307,114 @@ async def root():
     }
 
 
+# ---------------------------------------------------------------------------
+# SSO / Authentication (Chainlit UI only)
+# ---------------------------------------------------------------------------
+
+@app.get("/chat/auth/login")
+async def auth_login(request: Request):
+    """Initiate Entra ID SSO login flow."""
+    from m365_langchain_agent.auth import login_route
+    return login_route(request)
+
+
+@app.get("/chat/auth/callback")
+async def auth_callback(request: Request):
+    """Handle OAuth callback from Entra ID."""
+    from m365_langchain_agent.auth import callback_route
+    return callback_route(request)
+
+
+@app.get("/chat/auth/logout")
+async def auth_logout(request: Request):
+    """Logout and clear SSO session."""
+    from m365_langchain_agent.auth import logout_route
+    return logout_route(request)
+
+
+@app.get("/chat/auth/error")
+async def auth_error(request: Request):
+    """Auth error page."""
+    message = request.query_params.get("message", "Authentication failed")
+    return Response(
+        content=f"<html><body><h1>Authentication Error</h1><p>{message}</p><p><a href='/chat/auth/login'>Try again</a></p></body></html>",
+        media_type="text/html",
+    )
+
+
+# ---------------------------------------------------------------------------
+# SSO Middleware (protects /chat/ routes in Chainlit UI mode)
+# ---------------------------------------------------------------------------
+
+class SSOAuthMiddleware(BaseHTTPMiddleware):
+    """Middleware that enforces SSO authentication for Chainlit UI routes.
+
+    - Browser page loads (/chat/, /chat): redirect to /auth/login if no session cookie.
+    - Internal Chainlit requests (WebSocket, Socket.IO, APIs, assets): inject user
+      headers if cookie is present, otherwise pass through — Chainlit's
+      header_auth_callback will fall back to default-user.
+    """
+
+    # Paths that are internal Chainlit plumbing — never redirect these
+    _PASSTHROUGH_PREFIXES = (
+        "/chat/ws/",          # WebSocket / Socket.IO
+        "/chat/project/",     # Chainlit project config (translations, etc.)
+        "/chat/public/",      # Static assets (CSS, JS, images)
+        "/chat/favicon",      # Favicon
+        "/chat/files/",       # Uploaded files
+        "/chat/auth/",        # SSO auth routes (login, callback, logout, error)
+    )
+    # Exact paths that are internal Chainlit API
+    _PASSTHROUGH_EXACT = {
+        "/chat/user",
+    }
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # Only act on /chat/ routes
+        if path.startswith("/chat"):
+            from m365_langchain_agent.auth import (
+                get_user_from_request, create_session_cookie,
+                SESSION_COOKIE_NAME, SESSION_IDLE_TIMEOUT, SESSION_COOKIE_SECURE,
+            )
+
+            user = get_user_from_request(request)
+
+            if user:
+                # Authenticated — inject user identity as custom headers for Chainlit
+                request.state.user = user
+                request.scope["headers"].append((b"x-user-oid", user["oid"].encode()))
+                request.scope["headers"].append((b"x-user-name", user["name"].encode()))
+                request.scope["headers"].append((b"x-user-email", (user.get("email") or "").encode()))
+                request.scope["headers"].append((b"x-user-role", user["role"].encode()))
+
+                # Re-issue cookie to reset idle timeout clock
+                response = await call_next(request)
+                cookie_data = {k: v for k, v in user.items() if k != "role"}
+                response.set_cookie(
+                    key=SESSION_COOKIE_NAME,
+                    value=create_session_cookie(cookie_data),
+                    max_age=SESSION_IDLE_TIMEOUT,
+                    httponly=True,
+                    secure=SESSION_COOKIE_SECURE,
+                    samesite="lax",
+                )
+                return response
+            else:
+                # Not authenticated — only redirect browser page navigations,
+                # never redirect WebSocket, Socket.IO, or Chainlit API requests
+                is_passthrough = (
+                    path.startswith(self._PASSTHROUGH_PREFIXES)
+                    or path in self._PASSTHROUGH_EXACT
+                )
+                if not is_passthrough:
+                    return RedirectResponse(url="/chat/auth/login?next=/chat/")
+
+        response = await call_next(request)
+        return response
+
+
 if __name__ == "__main__":
     import uvicorn
 
@@ -288,7 +426,14 @@ if __name__ == "__main__":
     if user_interface == "CHAINLIT_UI":
         logger.info(f"[App] Starting Chainlit UI on port {port}")
         from chainlit.utils import mount_chainlit
-        from fastapi.responses import RedirectResponse
+
+        # Add SSO middleware to protect /chat/ routes
+        enable_sso = os.environ.get("ENABLE_SSO", "true").lower().strip() == "true"
+        if enable_sso:
+            logger.info("[App] SSO enabled — adding authentication middleware")
+            app.add_middleware(SSOAuthMiddleware)
+        else:
+            logger.warning("[App] SSO disabled (ENABLE_SSO=false) — running without authentication")
 
         chainlit_target = os.path.join(
             os.path.dirname(__file__), "m365_langchain_agent", "chainlit_app.py"
@@ -302,11 +447,23 @@ if __name__ == "__main__":
         async def root_redirect():
             return RedirectResponse(url="/chat/")
 
-        uvicorn.run(app, host="0.0.0.0", port=port)
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=port,
+            proxy_headers=True,
+            forwarded_allow_ips="*",
+        )
 
     elif user_interface == "BOT_SERVICE":
         logger.info(f"[App] Starting Bot Service on port {port}")
-        uvicorn.run(app, host="0.0.0.0", port=port)
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=port,
+            proxy_headers=True,
+            forwarded_allow_ips="*",
+        )
 
     else:
         logger.error(f"[App] Unknown USER_INTERFACE='{user_interface}'. Use CHAINLIT_UI or BOT_SERVICE.")

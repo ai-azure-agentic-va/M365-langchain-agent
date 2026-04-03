@@ -85,10 +85,35 @@ def get_data_layer():
     return CosmosDataLayer()
 
 
-# --- Auth: auto-authenticate all users so the sidebar is accessible ---
+# --- Auth: read user from SSO session (injected by middleware) ---
 @cl.header_auth_callback
 def header_auth_callback(headers: dict) -> User:
-    return User(identifier="default-user", metadata={"role": "user"})
+    """Read authenticated user from custom headers injected by SSOAuthMiddleware.
+
+    Returns:
+        User object with identifier=oid and metadata containing name, email, role
+    """
+    # Read custom headers set by the middleware
+    user_oid = headers.get("x-user-oid")
+    user_name = headers.get("x-user-name", "Unknown User")
+    user_email = headers.get("x-user-email", "")
+    user_role = headers.get("x-user-role", "user")
+
+    if not user_oid:
+        # Fall back to default user if SSO is disabled
+        logger.warning("[Chainlit] No user identity in headers — SSO may be disabled")
+        return User(identifier="default-user", metadata={"role": "user"})
+
+    logger.info(f"[Chainlit] User authenticated: oid={user_oid}, name={user_name}, role={user_role}")
+
+    return User(
+        identifier=user_oid,
+        metadata={
+            "name": user_name,
+            "email": user_email,
+            "role": user_role,
+        }
+    )
 
 
 @cl.author_rename
@@ -151,6 +176,15 @@ async def on_chat_start():
     conversation_id = f"chainlit-{uuid.uuid4().hex[:12]}"
     cl.user_session.set("conversation_id", conversation_id)
     logger.info(f"[Chainlit] New session: conversation_id={conversation_id}")
+
+    # Welcome message
+    await cl.Message(
+        content=(
+            "Welcome to ETS Virtual Assistant. Ask a question to instantly search "
+            "our Knowledge Base and internal resources."
+        ),
+        author="assistant",
+    ).send()
 
     if SHOW_CHAT_SETTINGS:
         available_models = get_available_models()
@@ -289,10 +323,14 @@ async def on_message(message: cl.Message):
         f"text={user_text[:100]}"
     )
 
-    # Load conversation history from CosmosDB
+    # Load conversation history from CosmosDB (with user validation)
     try:
+        # Get current user from session for validation
+        user = cl.user_session.get("user")
+        user_oid = user.identifier if user and user.identifier != "default-user" else None
+
         cosmos = get_cosmos_store()
-        history = cosmos.get_history(conversation_id)
+        history = cosmos.get_history(conversation_id, user_id=user_oid)
     except Exception as e:
         logger.error(f"[Chainlit] CosmosDB read failed: {e}")
         history = []
@@ -449,13 +487,22 @@ async def on_message(message: cl.Message):
 
         await cl.Message(content=accordion_msg, author="assistant").send()
 
-    # Save to CosmosDB for conversation history
+    # Save to CosmosDB for conversation history (with user identity)
     try:
+        # Get current user from session
+        user = cl.user_session.get("user")
+        user_oid = user.identifier if user and user.identifier != "default-user" else None
+        user_name = user.metadata.get("name") if user else None
+        user_email = user.metadata.get("email") if user else None
+
         cosmos = get_cosmos_store()
         cosmos.save_turn(
             conversation_id=conversation_id,
             user_message=user_text,
             bot_response=answer,
+            user_id=user_oid,
+            user_email=user_email,
+            user_display_name=user_name,
         )
     except Exception as e:
         logger.error(f"[Chainlit] CosmosDB write failed: {e}")

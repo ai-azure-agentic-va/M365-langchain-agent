@@ -319,6 +319,38 @@ button[title*="clipboard" i],
     }
 }
 
+/* Dedicated starter tray below the composer, Copilot-style. */
+#starter-prompts-fixed-tray {
+    display: none;
+}
+
+.starter-prompts-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    width: 100%;
+}
+
+.starter-prompts-grid .starter-chip {
+    min-height: 84px;
+    align-items: flex-start;
+    justify-content: flex-start;
+    padding: 14px 16px;
+    background: #ffffff;
+    box-shadow: 0 4px 12px rgba(16, 24, 40, 0.08);
+}
+
+.starter-prompts-grid .starter-chip-text {
+    white-space: normal;
+    line-height: 1.4;
+}
+
+@media (max-width: 1024px) {
+    .starter-prompts-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* Make the assistant logo fill the avatar slot more cleanly. */
 img[alt^="Avatar for"] {
     width: 100% !important;

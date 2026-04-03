@@ -288,6 +288,19 @@ Comma-separated list of Azure OpenAI deployment names shown in the Chainlit mode
 AZURE_OPENAI_AVAILABLE_MODELS=gpt-4.1,gpt-4.1-mini
 ```
 
+### `SHOW_STARTER_PROMPTS` and `SHOW_SUGGESTED_PROMPTS`
+
+Control prompt-chip UX per environment without code changes:
+
+| Variable | Behavior |
+|----------|----------|
+| `SHOW_STARTER_PROMPTS=true` | Show starter prompt chips under the chat composer. |
+| `SHOW_STARTER_PROMPTS=false` | Hide starter prompt chips completely. |
+| `SHOW_SUGGESTED_PROMPTS=true` | Show post-answer "Want to explore further?" suggestion chips. |
+| `SHOW_SUGGESTED_PROMPTS=false` | Hide follow-up suggestion chips. |
+
+`STARTER_PROMPTS` remains the JSON source of starter content. Setting `STARTER_PROMPTS=[]` also disables starter chips.
+
 ---
 
 ## Environment Variables
@@ -302,7 +315,7 @@ All configuration is externalized. See [.env.example](.env.example) for the full
 | **Bot Framework** | `BOT_APP_ID`, `BOT_APP_PASSWORD` (empty for MSI), `BOT_AUTH_TENANT` | Bot mode only |
 | **AI Foundry** | `AZURE_FOUNDRY_ENDPOINT`, `AZURE_FOUNDRY_SUBSCRIPTION_ID`, `AZURE_FOUNDRY_RESOURCE_GROUP`, `AZURE_FOUNDRY_WORKSPACE` | Foundry registration only |
 | **LangSmith** | `LANGSMITH_API_KEY`, `LANGCHAIN_TRACING_V2`, `LANGCHAIN_PROJECT` | Optional |
-| **Application** | `USER_INTERFACE`, `SHOW_CHAT_SETTINGS`, `DEFAULT_TOP_K`, `DEFAULT_TEMPERATURE`, `LOG_LEVEL`, `PORT` | No (have defaults) |
+| **Application** | `USER_INTERFACE`, `SHOW_CHAT_SETTINGS`, `SHOW_STARTER_PROMPTS`, `SHOW_SUGGESTED_PROMPTS`, `STARTER_PROMPTS`, `DEFAULT_TOP_K`, `DEFAULT_TEMPERATURE`, `LOG_LEVEL`, `PORT` | No (have defaults) |
 | **CosmosDB Tuning** | `COSMOS_TTL_SECONDS` (default: 86400), `COSMOS_MAX_MESSAGES` (default: 20) | No |
 
 ---

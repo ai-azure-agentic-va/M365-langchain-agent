@@ -31,3 +31,7 @@ requests>=2.31.0
 # Core
 pydantic>=2.10.5
 python-dotenv>=1.0.1
+
+# SSO / Authentication
+msal>=1.28.0
+itsdangerous>=2.1.0
