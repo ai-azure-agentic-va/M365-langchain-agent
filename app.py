@@ -381,7 +381,7 @@ async def auth_error(request: Request):
 class SSOAuthMiddleware(BaseHTTPMiddleware):
     """Middleware that enforces SSO authentication for Chainlit UI routes.
 
-    - Browser page loads (/chat/, /chat): redirect to /auth/login if no session cookie.
+    - Browser page loads (/chat/, /chat): redirect to /chat/auth/login if no session cookie.
     - Internal Chainlit requests (WebSocket, Socket.IO, APIs, assets): inject user
       headers if cookie is present, otherwise pass through — Chainlit's
       header_auth_callback will fall back to default-user.
