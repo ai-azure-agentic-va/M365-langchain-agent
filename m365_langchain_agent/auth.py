@@ -19,12 +19,11 @@ from typing import Optional, Dict
 from urllib.parse import urlencode
 
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
-from fastapi import Request, Response
+from fastapi import Request
 from fastapi.responses import RedirectResponse
 
 logger = logging.getLogger(__name__)
 
-# Environment configuration
 ENTRA_TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "")
 ENTRA_CLIENT_ID = os.environ.get("ENTRA_CLIENT_ID", "")
 ENTRA_CLIENT_SECRET = os.environ.get("ENTRA_CLIENT_SECRET", "")
@@ -32,14 +31,14 @@ ENTRA_REDIRECT_URI = os.environ.get("ENTRA_REDIRECT_URI", "")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "")
 AI_VA_ADMINS_GROUP_ID = os.environ.get("AI_VA_ADMINS_GROUP_ID", "")
 
-# Session cookie settings
 SESSION_COOKIE_NAME = "m365_sso_session"
-SESSION_MAX_AGE = int(os.environ.get("SESSION_MAX_AGE", "28800"))  # 8 hours absolute max
-SESSION_IDLE_TIMEOUT = int(os.environ.get("SESSION_IDLE_TIMEOUT", "900"))  # 15 min idle default
-# Set secure=True only for HTTPS redirect URIs (allows HTTP for local dev)
+SIGNED_OUT_COOKIE_NAME = "m365_sso_signed_out"
+CHAINLIT_AUTH_COOKIE_NAME = os.environ.get("CHAINLIT_AUTH_COOKIE_NAME", "access_token")
+CHAINLIT_SESSION_COOKIE_NAME = "X-Chainlit-Session-id"
+SESSION_MAX_AGE = int(os.environ.get("SESSION_MAX_AGE", "28800"))
+SESSION_IDLE_TIMEOUT = int(os.environ.get("SESSION_IDLE_TIMEOUT", "900"))
 SESSION_COOKIE_SECURE = ENTRA_REDIRECT_URI.startswith("https://")
 
-# MSAL instance (lazy-initialized)
 _msal_app = None
 
 
@@ -133,7 +132,7 @@ def get_user_from_request(request: Request) -> Optional[Dict]:
     return user_data
 
 
-def build_auth_url(state: str) -> str:
+def build_auth_url(state: str, prompt: Optional[str] = None) -> str:
     """Build the Entra ID authorization URL for OIDC login.
 
     Args:
@@ -144,14 +143,13 @@ def build_auth_url(state: str) -> str:
     """
     msal_app = get_msal_app()
 
-    # OIDC scopes - openid and profile are automatically added by MSAL
-    # Only specify additional scopes here
     scopes = ["User.Read"]
 
     auth_url = msal_app.get_authorization_request_url(
         scopes=scopes,
         state=state,
         redirect_uri=ENTRA_REDIRECT_URI,
+        prompt=prompt,
     )
 
     return auth_url
@@ -170,7 +168,6 @@ def handle_callback(code: str, state: str) -> Optional[Dict]:
     """
     msal_app = get_msal_app()
 
-    # OIDC scopes - openid and profile are automatically included
     scopes = ["User.Read"]
 
     try:
@@ -184,24 +181,20 @@ def handle_callback(code: str, state: str) -> Optional[Dict]:
             logger.error(f"[Auth] Token acquisition failed: {result.get('error')}: {result.get('error_description')}")
             return None
 
-        # Extract claims from ID token
         id_token_claims = result.get("id_token_claims", {})
 
         user_data = {
-            "oid": id_token_claims.get("oid"),  # Entra ID Object ID
+            "oid": id_token_claims.get("oid"),
             "name": id_token_claims.get("name", "Unknown User"),
             "email": id_token_claims.get("preferred_username") or id_token_claims.get("email"),
-            "groups": id_token_claims.get("groups", []),  # List of group OIDs
+            "groups": id_token_claims.get("groups", []),
         }
 
-        # Handle group overage (>200 groups) - groups claim becomes _claim_names/_claim_sources
         if "_claim_names" in id_token_claims and "groups" in id_token_claims["_claim_names"]:
             logger.warning(
                 f"[Auth] User {user_data['oid']} has >200 groups. Group overage not implemented yet. "
                 "Admin features may not work. Implement Graph API call to resolve groups."
             )
-            # TODO: Call Graph API to fetch user's groups
-            # For now, set empty list
             user_data["groups"] = []
 
         logger.info(f"[Auth] User authenticated: oid={user_data['oid']}, email={user_data['email']}, groups={len(user_data['groups'])}")
@@ -229,22 +222,20 @@ def build_logout_url(post_logout_redirect_uri: str) -> str:
     return f"{logout_url}?{urlencode(params)}"
 
 
-# FastAPI route handlers
-
 def login_route(request: Request) -> RedirectResponse:
     """Initiate OIDC login flow.
 
     Generates a random state, stores it in a temporary cookie, and redirects to Entra ID.
     """
     state = secrets.token_urlsafe(32)
-    auth_url = build_auth_url(state)
+    prompt = request.query_params.get("prompt")
+    auth_url = build_auth_url(state, prompt=prompt)
 
     response = RedirectResponse(url=auth_url)
-    # Store state in a cookie for validation in callback
     response.set_cookie(
         key="oauth_state",
         value=state,
-        max_age=600,  # 10 minutes
+        max_age=600,
         httponly=True,
         secure=SESSION_COOKIE_SECURE,
         samesite="lax",
@@ -264,28 +255,24 @@ def callback_route(request: Request) -> RedirectResponse:
     state = request.query_params.get("state")
     error = request.query_params.get("error")
 
-    # Check for OAuth errors
     if error:
         error_desc = request.query_params.get("error_description", "Unknown error")
         logger.error(f"[Auth] OAuth error: {error}: {error_desc}")
-        return RedirectResponse(url="/auth/error?message=" + error_desc)
+        return RedirectResponse(url="/chat/auth/error?message=" + error_desc)
 
     if not code or not state:
         logger.error("[Auth] Missing code or state in callback")
-        return RedirectResponse(url="/auth/error?message=Missing authorization code")
+        return RedirectResponse(url="/chat/auth/error?message=Missing authorization code")
 
-    # Validate state (CSRF protection)
     stored_state = request.cookies.get("oauth_state")
     if not stored_state or stored_state != state:
         logger.error(f"[Auth] State mismatch: stored={stored_state}, received={state}")
-        return RedirectResponse(url="/auth/error?message=State validation failed")
+        return RedirectResponse(url="/chat/auth/error?message=State validation failed")
 
-    # Exchange code for tokens
     user_data = handle_callback(code, state)
     if not user_data:
-        return RedirectResponse(url="/auth/error?message=Authentication failed")
+        return RedirectResponse(url="/chat/auth/error?message=Authentication failed")
 
-    # Create session cookie
     session_value = create_session_cookie(user_data)
 
     response = RedirectResponse(url="/chat/")
@@ -295,11 +282,13 @@ def callback_route(request: Request) -> RedirectResponse:
         max_age=SESSION_IDLE_TIMEOUT,
         httponly=True,
         secure=SESSION_COOKIE_SECURE,
-        samesite="lax",  # CSRF protection
+        samesite="lax",
     )
 
-    # Clear the state cookie
     response.delete_cookie(key="oauth_state")
+    response.delete_cookie(key=SIGNED_OUT_COOKIE_NAME)
+    response.delete_cookie(key=CHAINLIT_AUTH_COOKIE_NAME)
+    response.delete_cookie(key=CHAINLIT_SESSION_COOKIE_NAME)
 
     logger.info(f"[Auth] Login successful: oid={user_data['oid']}, email={user_data['email']}")
     return response
@@ -311,14 +300,24 @@ def logout_route(request: Request) -> RedirectResponse:
     Clears the session cookie and redirects to Entra ID logout endpoint
     to clear the SSO session.
     """
-    # Build post-logout redirect (back to login)
     base_url = str(request.base_url).rstrip("/")
-    post_logout_uri = f"{base_url}/chat/auth/login"
+    post_logout_uri = f"{base_url}/chat/auth/signed-out"
 
     logout_url = build_logout_url(post_logout_uri)
 
     response = RedirectResponse(url=logout_url)
     response.delete_cookie(key=SESSION_COOKIE_NAME)
+    response.delete_cookie(key="oauth_state")
+    response.delete_cookie(key=CHAINLIT_AUTH_COOKIE_NAME)
+    response.delete_cookie(key=CHAINLIT_SESSION_COOKIE_NAME)
+    response.set_cookie(
+        key=SIGNED_OUT_COOKIE_NAME,
+        value="1",
+        max_age=600,
+        httponly=True,
+        secure=SESSION_COOKIE_SECURE,
+        samesite="lax",
+    )
 
     logger.info("[Auth] User logged out")
     return response

@@ -120,7 +120,6 @@ class AzureSearchClient:
                 "pii_redacted": r.get("pii_redacted", False),
             })
 
-        # Trim to requested top_k after semantic reranking
         docs = docs[:top_k]
 
         logger.info(
