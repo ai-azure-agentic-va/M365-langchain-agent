@@ -177,6 +177,15 @@ async def on_chat_start():
     cl.user_session.set("conversation_id", conversation_id)
     logger.info(f"[Chainlit] New session: conversation_id={conversation_id}")
 
+    # Welcome message
+    await cl.Message(
+        content=(
+            "Welcome to ETS Virtual Assistant. Ask a question to instantly search "
+            "our Knowledge Base and internal resources."
+        ),
+        author="assistant",
+    ).send()
+
     if SHOW_CHAT_SETTINGS:
         available_models = get_available_models()
         settings = await cl.ChatSettings(

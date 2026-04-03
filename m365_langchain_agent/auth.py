@@ -7,7 +7,7 @@ Environment variables required:
     ENTRA_TENANT_ID: Azure AD tenant ID
     ENTRA_CLIENT_ID: App Registration client ID
     ENTRA_CLIENT_SECRET: App Registration client secret
-    ENTRA_REDIRECT_URI: OAuth callback URL (e.g., https://<fqdn>/auth/callback)
+    ENTRA_REDIRECT_URI: OAuth callback URL (e.g., https://<fqdn>/chat/auth/callback)
     SESSION_SECRET: Secret key for encrypting session cookies
     AI_VA_ADMINS_GROUP_ID: Optional - Group OID for admins
 """
@@ -34,7 +34,10 @@ AI_VA_ADMINS_GROUP_ID = os.environ.get("AI_VA_ADMINS_GROUP_ID", "")
 
 # Session cookie settings
 SESSION_COOKIE_NAME = "m365_sso_session"
-SESSION_MAX_AGE = int(os.environ.get("SESSION_MAX_AGE", "28800"))  # 8 hours default
+SESSION_MAX_AGE = int(os.environ.get("SESSION_MAX_AGE", "28800"))  # 8 hours absolute max
+SESSION_IDLE_TIMEOUT = int(os.environ.get("SESSION_IDLE_TIMEOUT", "900"))  # 15 min idle default
+# Set secure=True only for HTTPS redirect URIs (allows HTTP for local dev)
+SESSION_COOKIE_SECURE = ENTRA_REDIRECT_URI.startswith("https://")
 
 # MSAL instance (lazy-initialized)
 _msal_app = None
@@ -83,16 +86,21 @@ def create_session_cookie(user_data: Dict) -> str:
     return serializer.dumps(user_data)
 
 
-def read_session_cookie(cookie_value: str, max_age: int = SESSION_MAX_AGE) -> Optional[Dict]:
+def read_session_cookie(cookie_value: str, max_age: int = None) -> Optional[Dict]:
     """Read and validate a signed session cookie.
+
+    Uses SESSION_IDLE_TIMEOUT by default — the cookie is re-issued on each
+    request so this effectively enforces an idle timeout.
 
     Args:
         cookie_value: The session cookie value
-        max_age: Maximum age in seconds (default: SESSION_MAX_AGE)
+        max_age: Maximum age in seconds (default: SESSION_IDLE_TIMEOUT)
 
     Returns:
         User data dict if valid, None if invalid/expired
     """
+    if max_age is None:
+        max_age = SESSION_IDLE_TIMEOUT
     try:
         serializer = get_session_serializer()
         user_data = serializer.loads(cookie_value, max_age=max_age)
@@ -238,7 +246,7 @@ def login_route(request: Request) -> RedirectResponse:
         value=state,
         max_age=600,  # 10 minutes
         httponly=True,
-        secure=True,
+        secure=SESSION_COOKIE_SECURE,
         samesite="lax",
     )
 
@@ -260,22 +268,22 @@ def callback_route(request: Request) -> RedirectResponse:
     if error:
         error_desc = request.query_params.get("error_description", "Unknown error")
         logger.error(f"[Auth] OAuth error: {error}: {error_desc}")
-        return RedirectResponse(url="/auth/error?message=" + error_desc)
+        return RedirectResponse(url="/chat/auth/error?message=" + error_desc)
 
     if not code or not state:
         logger.error("[Auth] Missing code or state in callback")
-        return RedirectResponse(url="/auth/error?message=Missing authorization code")
+        return RedirectResponse(url="/chat/auth/error?message=Missing authorization code")
 
     # Validate state (CSRF protection)
     stored_state = request.cookies.get("oauth_state")
     if not stored_state or stored_state != state:
         logger.error(f"[Auth] State mismatch: stored={stored_state}, received={state}")
-        return RedirectResponse(url="/auth/error?message=State validation failed")
+        return RedirectResponse(url="/chat/auth/error?message=State validation failed")
 
     # Exchange code for tokens
     user_data = handle_callback(code, state)
     if not user_data:
-        return RedirectResponse(url="/auth/error?message=Authentication failed")
+        return RedirectResponse(url="/chat/auth/error?message=Authentication failed")
 
     # Create session cookie
     session_value = create_session_cookie(user_data)
@@ -284,9 +292,9 @@ def callback_route(request: Request) -> RedirectResponse:
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_value,
-        max_age=SESSION_MAX_AGE,
+        max_age=SESSION_IDLE_TIMEOUT,
         httponly=True,
-        secure=True,  # HTTPS only
+        secure=SESSION_COOKIE_SECURE,
         samesite="lax",  # CSRF protection
     )
 
@@ -305,7 +313,7 @@ def logout_route(request: Request) -> RedirectResponse:
     """
     # Build post-logout redirect (back to login)
     base_url = str(request.base_url).rstrip("/")
-    post_logout_uri = f"{base_url}/auth/login"
+    post_logout_uri = f"{base_url}/chat/auth/login"
 
     logout_url = build_logout_url(post_logout_uri)
 
