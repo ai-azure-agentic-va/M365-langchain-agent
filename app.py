@@ -20,6 +20,8 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import RedirectResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from botbuilder.core import (
     BotFrameworkAdapter,
     BotFrameworkAdapterSettings,
@@ -305,6 +307,97 @@ async def root():
     }
 
 
+# ---------------------------------------------------------------------------
+# SSO / Authentication (Chainlit UI only)
+# ---------------------------------------------------------------------------
+
+@app.get("/auth/login")
+async def auth_login(request: Request):
+    """Initiate Entra ID SSO login flow."""
+    from m365_langchain_agent.auth import login_route
+    return login_route(request)
+
+
+@app.get("/auth/callback")
+async def auth_callback(request: Request):
+    """Handle OAuth callback from Entra ID."""
+    from m365_langchain_agent.auth import callback_route
+    return callback_route(request)
+
+
+@app.get("/auth/logout")
+async def auth_logout(request: Request):
+    """Logout and clear SSO session."""
+    from m365_langchain_agent.auth import logout_route
+    return logout_route(request)
+
+
+@app.get("/auth/error")
+async def auth_error(request: Request):
+    """Auth error page."""
+    message = request.query_params.get("message", "Authentication failed")
+    return Response(
+        content=f"<html><body><h1>Authentication Error</h1><p>{message}</p><p><a href='/auth/login'>Try again</a></p></body></html>",
+        media_type="text/html",
+    )
+
+
+# ---------------------------------------------------------------------------
+# SSO Middleware (protects /chat/ routes in Chainlit UI mode)
+# ---------------------------------------------------------------------------
+
+class SSOAuthMiddleware(BaseHTTPMiddleware):
+    """Middleware that enforces SSO authentication for Chainlit UI routes.
+
+    - Browser page loads (/chat/, /chat): redirect to /auth/login if no session cookie.
+    - Internal Chainlit requests (WebSocket, Socket.IO, APIs, assets): inject user
+      headers if cookie is present, otherwise pass through — Chainlit's
+      header_auth_callback will fall back to default-user.
+    """
+
+    # Paths that are internal Chainlit plumbing — never redirect these
+    _PASSTHROUGH_PREFIXES = (
+        "/chat/ws/",          # WebSocket / Socket.IO
+        "/chat/project/",     # Chainlit project config (translations, etc.)
+        "/chat/public/",      # Static assets (CSS, JS, images)
+        "/chat/favicon",      # Favicon
+        "/chat/files/",       # Uploaded files
+    )
+    # Exact paths that are internal Chainlit API
+    _PASSTHROUGH_EXACT = {
+        "/chat/user",
+    }
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+
+        # Only act on /chat/ routes
+        if path.startswith("/chat"):
+            from m365_langchain_agent.auth import get_user_from_request
+
+            user = get_user_from_request(request)
+
+            if user:
+                # Authenticated — inject user identity as custom headers for Chainlit
+                request.state.user = user
+                request.scope["headers"].append((b"x-user-oid", user["oid"].encode()))
+                request.scope["headers"].append((b"x-user-name", user["name"].encode()))
+                request.scope["headers"].append((b"x-user-email", (user.get("email") or "").encode()))
+                request.scope["headers"].append((b"x-user-role", user["role"].encode()))
+            else:
+                # Not authenticated — only redirect browser page navigations,
+                # never redirect WebSocket, Socket.IO, or Chainlit API requests
+                is_passthrough = (
+                    path.startswith(self._PASSTHROUGH_PREFIXES)
+                    or path in self._PASSTHROUGH_EXACT
+                )
+                if not is_passthrough:
+                    return RedirectResponse(url="/auth/login?next=/chat/")
+
+        response = await call_next(request)
+        return response
+
+
 if __name__ == "__main__":
     import uvicorn
 
@@ -316,7 +409,14 @@ if __name__ == "__main__":
     if user_interface == "CHAINLIT_UI":
         logger.info(f"[App] Starting Chainlit UI on port {port}")
         from chainlit.utils import mount_chainlit
-        from fastapi.responses import RedirectResponse
+
+        # Add SSO middleware to protect /chat/ routes
+        enable_sso = os.environ.get("ENABLE_SSO", "true").lower().strip() == "true"
+        if enable_sso:
+            logger.info("[App] SSO enabled — adding authentication middleware")
+            app.add_middleware(SSOAuthMiddleware)
+        else:
+            logger.warning("[App] SSO disabled (ENABLE_SSO=false) — running without authentication")
 
         chainlit_target = os.path.join(
             os.path.dirname(__file__), "m365_langchain_agent", "chainlit_app.py"
@@ -330,11 +430,23 @@ if __name__ == "__main__":
         async def root_redirect():
             return RedirectResponse(url="/chat/")
 
-        uvicorn.run(app, host="0.0.0.0", port=port)
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=port,
+            proxy_headers=True,
+            forwarded_allow_ips="*",
+        )
 
     elif user_interface == "BOT_SERVICE":
         logger.info(f"[App] Starting Bot Service on port {port}")
-        uvicorn.run(app, host="0.0.0.0", port=port)
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=port,
+            proxy_headers=True,
+            forwarded_allow_ips="*",
+        )
 
     else:
         logger.error(f"[App] Unknown USER_INTERFACE='{user_interface}'. Use CHAINLIT_UI or BOT_SERVICE.")

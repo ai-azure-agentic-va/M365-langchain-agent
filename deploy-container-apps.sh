@@ -49,6 +49,18 @@ BOT_APP_PASSWORD="${BOT_APP_PASSWORD:-}"
 # Chainlit auth (required for conversation history sidebar)
 CHAINLIT_AUTH_SECRET="${CHAINLIT_AUTH_SECRET:?Set CHAINLIT_AUTH_SECRET — run: python3 -c \"import secrets; print(secrets.token_hex(32))\"}"
 
+# Entra ID SSO (required for CHAINLIT_UI with ENABLE_SSO=true)
+ENABLE_SSO="${ENABLE_SSO:-true}"
+ENTRA_TENANT_ID="${ENTRA_TENANT_ID:-}"
+ENTRA_CLIENT_ID="${ENTRA_CLIENT_ID:-}"
+ENTRA_CLIENT_SECRET="${ENTRA_CLIENT_SECRET:-}"
+SESSION_SECRET="${SESSION_SECRET:-}"
+SESSION_MAX_AGE="${SESSION_MAX_AGE:-28800}"
+
+# Group-based RBAC (optional)
+AI_VA_USERS_GROUP_ID="${AI_VA_USERS_GROUP_ID:-}"
+AI_VA_ADMINS_GROUP_ID="${AI_VA_ADMINS_GROUP_ID:-}"
+
 # LangSmith (optional)
 LANGSMITH_API_KEY="${LANGSMITH_API_KEY:-}"
 
@@ -95,7 +107,7 @@ ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query username -o tsv
 ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
 
 # Step 4: Create/update Container App
-echo "[4/5] Creating Container App: $APP_NAME"
+echo "[4/6] Creating Container App: $APP_NAME"
 
 TRACING_ENABLED="false"
 if [[ -n "$LANGSMITH_API_KEY" ]]; then
@@ -135,6 +147,12 @@ az containerapp create \
         LANGCHAIN_PROJECT="m365-langchain-agent" \
         LANGSMITH_API_KEY="$LANGSMITH_API_KEY" \
         CHAINLIT_AUTH_SECRET="$CHAINLIT_AUTH_SECRET" \
+        ENABLE_SSO="$ENABLE_SSO" \
+        ENTRA_TENANT_ID="$ENTRA_TENANT_ID" \
+        ENTRA_CLIENT_ID="$ENTRA_CLIENT_ID" \
+        SESSION_MAX_AGE="$SESSION_MAX_AGE" \
+        AI_VA_USERS_GROUP_ID="$AI_VA_USERS_GROUP_ID" \
+        AI_VA_ADMINS_GROUP_ID="$AI_VA_ADMINS_GROUP_ID" \
         SHOW_SUGGESTED_PROMPTS="$SHOW_SUGGESTED_PROMPTS" \
         SHOW_STARTER_PROMPTS="$SHOW_STARTER_PROMPTS" \
         STARTER_PROMPTS="$STARTER_PROMPTS" \
@@ -142,12 +160,38 @@ az containerapp create \
         PORT="8080" \
     --only-show-errors -o none
 
-# Step 5: Get the FQDN and verify
-echo "[5/5] Getting Container App URL..."
+# Step 5: Add secrets and reference them as env vars
+echo "[5/6] Adding secrets (ENTRA_CLIENT_SECRET, SESSION_SECRET)..."
+
+# Add secrets to the container app
+az containerapp secret set \
+    --name "$APP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --secrets \
+        entra-client-secret="$ENTRA_CLIENT_SECRET" \
+        session-secret="$SESSION_SECRET" \
+    --only-show-errors -o none
+
+# Get the FQDN for the redirect URI
 FQDN=$(az containerapp show \
     --name "$APP_NAME" \
     --resource-group "$RESOURCE_GROUP" \
     --query properties.configuration.ingress.fqdn -o tsv)
+
+# Set secret-ref env vars + redirect URI (requires the FQDN)
+az containerapp update \
+    --name "$APP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --set-env-vars \
+        ENTRA_CLIENT_SECRET=secretref:entra-client-secret \
+        SESSION_SECRET=secretref:session-secret \
+        ENTRA_REDIRECT_URI="https://$FQDN/auth/callback" \
+    --only-show-errors -o none
+
+echo "  Secrets added and ENTRA_REDIRECT_URI set to https://$FQDN/auth/callback"
+
+# Step 6: Get the FQDN and verify
+echo "[6/6] Getting Container App URL..."
 
 echo ""
 echo "=== DEPLOYMENT COMPLETE ==="

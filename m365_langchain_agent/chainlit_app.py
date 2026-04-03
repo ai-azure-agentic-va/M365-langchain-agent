@@ -85,10 +85,35 @@ def get_data_layer():
     return CosmosDataLayer()
 
 
-# --- Auth: auto-authenticate all users so the sidebar is accessible ---
+# --- Auth: read user from SSO session (injected by middleware) ---
 @cl.header_auth_callback
 def header_auth_callback(headers: dict) -> User:
-    return User(identifier="default-user", metadata={"role": "user"})
+    """Read authenticated user from custom headers injected by SSOAuthMiddleware.
+
+    Returns:
+        User object with identifier=oid and metadata containing name, email, role
+    """
+    # Read custom headers set by the middleware
+    user_oid = headers.get("x-user-oid")
+    user_name = headers.get("x-user-name", "Unknown User")
+    user_email = headers.get("x-user-email", "")
+    user_role = headers.get("x-user-role", "user")
+
+    if not user_oid:
+        # Fall back to default user if SSO is disabled
+        logger.warning("[Chainlit] No user identity in headers — SSO may be disabled")
+        return User(identifier="default-user", metadata={"role": "user"})
+
+    logger.info(f"[Chainlit] User authenticated: oid={user_oid}, name={user_name}, role={user_role}")
+
+    return User(
+        identifier=user_oid,
+        metadata={
+            "name": user_name,
+            "email": user_email,
+            "role": user_role,
+        }
+    )
 
 
 @cl.author_rename
@@ -101,45 +126,26 @@ async def rename_author(author: str) -> str:
 
 @cl.set_starters
 async def set_starters():
-    """Disable native Chainlit starters.
+    """Card-style starter prompts shown in the empty chat state.
 
-    We render custom starter chips in on_chat_start so starters and
-    suggested prompts share the same HTML/CSS and interaction pattern.
+    Reads from STARTER_PROMPTS env var (JSON array of {label, message} objects).
+    Returns None (no starters) if the env var is missing or empty.
     """
-    return None
-
-
-def _load_starter_prompts() -> list[str]:
-    """Load starter prompt messages from STARTER_PROMPTS env JSON."""
     raw = os.environ.get("STARTER_PROMPTS", "").strip()
     if not raw:
-        return []
+        return None
     try:
         items = json.loads(raw)
     except json.JSONDecodeError:
         logger.warning("[Chainlit] STARTER_PROMPTS is not valid JSON — skipping starters")
-        return []
+        return None
     if not items:
-        return []
-    return [item["message"] for item in items if item.get("message")]
-
-
-def _build_starter_chips_html(starters: list[str]) -> str:
-    """Build starter chips with same style/markup as suggestion chips."""
-    chips = []
-    for s in starters:
-        safe = escape(s)
-        chips.append(
-            f'<div class="suggestion-chip starter-chip" data-starter-prompt="{safe}">'
-            f'<span class="suggestion-chip-text starter-chip-text">{safe}</span>'
-            f'</div>'
-        )
-    return (
-        '<div class="suggestion-chips-container starter-chips-container">'
-        '<div class="suggestion-chips-label">Try one of these prompts</div>'
-        + "".join(chips)
-        + '</div>'
-    )
+        return None
+    return [
+        cl.Starter(label=item["message"], message=item["message"])
+        for item in items
+        if item.get("message")
+    ]
 
 
 def _build_suggestion_chips_html(suggestions: list[str]) -> str:
@@ -317,10 +323,14 @@ async def on_message(message: cl.Message):
         f"text={user_text[:100]}"
     )
 
-    # Load conversation history from CosmosDB
+    # Load conversation history from CosmosDB (with user validation)
     try:
+        # Get current user from session for validation
+        user = cl.user_session.get("user")
+        user_oid = user.identifier if user and user.identifier != "default-user" else None
+
         cosmos = get_cosmos_store()
-        history = cosmos.get_history(conversation_id)
+        history = cosmos.get_history(conversation_id, user_id=user_oid)
     except Exception as e:
         logger.error(f"[Chainlit] CosmosDB read failed: {e}")
         history = []
@@ -477,13 +487,22 @@ async def on_message(message: cl.Message):
 
         await cl.Message(content=accordion_msg, author="assistant").send()
 
-    # Save to CosmosDB for conversation history
+    # Save to CosmosDB for conversation history (with user identity)
     try:
+        # Get current user from session
+        user = cl.user_session.get("user")
+        user_oid = user.identifier if user and user.identifier != "default-user" else None
+        user_name = user.metadata.get("name") if user else None
+        user_email = user.metadata.get("email") if user else None
+
         cosmos = get_cosmos_store()
         cosmos.save_turn(
             conversation_id=conversation_id,
             user_message=user_text,
             bot_response=answer,
+            user_id=user_oid,
+            user_email=user_email,
+            user_display_name=user_name,
         )
     except Exception as e:
         logger.error(f"[Chainlit] CosmosDB write failed: {e}")
