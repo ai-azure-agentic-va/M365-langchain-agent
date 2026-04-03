@@ -7,7 +7,7 @@ Environment variables required:
     ENTRA_TENANT_ID: Azure AD tenant ID
     ENTRA_CLIENT_ID: App Registration client ID
     ENTRA_CLIENT_SECRET: App Registration client secret
-    ENTRA_REDIRECT_URI: OAuth callback URL (e.g., https://<fqdn>/auth/callback)
+    ENTRA_REDIRECT_URI: OAuth callback URL (e.g., https://<fqdn>/chat/auth/callback)
     SESSION_SECRET: Secret key for encrypting session cookies
     AI_VA_ADMINS_GROUP_ID: Optional - Group OID for admins
 """
@@ -268,22 +268,22 @@ def callback_route(request: Request) -> RedirectResponse:
     if error:
         error_desc = request.query_params.get("error_description", "Unknown error")
         logger.error(f"[Auth] OAuth error: {error}: {error_desc}")
-        return RedirectResponse(url="/auth/error?message=" + error_desc)
+        return RedirectResponse(url="/chat/auth/error?message=" + error_desc)
 
     if not code or not state:
         logger.error("[Auth] Missing code or state in callback")
-        return RedirectResponse(url="/auth/error?message=Missing authorization code")
+        return RedirectResponse(url="/chat/auth/error?message=Missing authorization code")
 
     # Validate state (CSRF protection)
     stored_state = request.cookies.get("oauth_state")
     if not stored_state or stored_state != state:
         logger.error(f"[Auth] State mismatch: stored={stored_state}, received={state}")
-        return RedirectResponse(url="/auth/error?message=State validation failed")
+        return RedirectResponse(url="/chat/auth/error?message=State validation failed")
 
     # Exchange code for tokens
     user_data = handle_callback(code, state)
     if not user_data:
-        return RedirectResponse(url="/auth/error?message=Authentication failed")
+        return RedirectResponse(url="/chat/auth/error?message=Authentication failed")
 
     # Create session cookie
     session_value = create_session_cookie(user_data)
