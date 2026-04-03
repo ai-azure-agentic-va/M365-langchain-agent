@@ -7,6 +7,8 @@
 (function () {
   var scheduled = false;
   var cachedStarterContainer = null;
+  var starterPromptsLoaded = false;
+  var starterPrompts = [];
 
   // ─── Helpers ───────────────────────────────────────────────
 
@@ -49,6 +51,27 @@
     }, 0);
   }
 
+  function loadStarterPrompts() {
+    if (starterPromptsLoaded) return;
+    starterPromptsLoaded = true;
+
+    fetch("/starter-prompts")
+      .then(function (r) {
+        if (!r.ok) throw new Error("starter-prompts fetch failed");
+        return r.json();
+      })
+      .then(function (data) {
+        var prompts = data && Array.isArray(data.prompts) ? data.prompts : [];
+        starterPrompts = prompts.filter(function (p) {
+          return typeof p === "string" && p.trim().length > 0;
+        });
+        scheduleApply();
+      })
+      .catch(function () {
+        starterPrompts = [];
+      });
+  }
+
   // ─── Feedback button hiding ────────────────────────────────
 
   function hideFeedbackButtons() {
@@ -83,6 +106,19 @@
     var textarea = getTextarea();
     if (!textarea) return null;
     return textarea.closest("form");
+  }
+
+  function getComposerContainer(form) {
+    if (!form) return null;
+    var node = form;
+    while (node && node !== document.body) {
+      var style = window.getComputedStyle(node);
+      if (style.position === "fixed" || style.position === "sticky") {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return form.parentElement || form;
   }
 
   function extractButtonPrompt(btn) {
@@ -192,12 +228,168 @@
     }
   }
 
+  function enhanceCustomStarterChips() {
+    var chips = document.querySelectorAll(".starter-chip");
+    for (var i = 0; i < chips.length; i++) {
+      var chip = chips[i];
+      if (chip.dataset.enhanced) continue;
+      chip.dataset.enhanced = "true";
+
+      var prompt = chip.dataset.starterPrompt;
+      if (!prompt) continue;
+
+      // Click on starter chip text -> populate input only (user edits, then Enter).
+      var textSpan = chip.querySelector(".starter-chip-text");
+      if (textSpan) {
+        (function (p) {
+          textSpan.addEventListener("click", function () {
+            populateInput(p);
+          });
+        })(prompt);
+      }
+    }
+  }
+
+  function ensureStarterAnchor(form) {
+    if (!form) return null;
+    var host = form.parentElement || form;
+    var anchor = document.querySelector("#starter-prompts-fixed-tray");
+    if (!anchor) {
+      anchor = document.createElement("div");
+      anchor.id = "starter-prompts-fixed-tray";
+      host.appendChild(anchor);
+    } else if (anchor.parentElement !== host) {
+      host.appendChild(anchor);
+    }
+    return anchor;
+  }
+
+  function renderStarterPromptsBelowInput() {
+    var form = getMessageForm();
+    if (!form) return;
+    var anchor = ensureStarterAnchor(form);
+    if (!anchor) return;
+
+    // Ensure no legacy starter blocks remain in message list.
+    var legacy = document.querySelectorAll(".starter-chips-container");
+    for (var i = 0; i < legacy.length; i++) {
+      var step = legacy[i].closest(".step");
+      legacy[i].style.display = "none";
+      if (step) step.style.display = "none";
+    }
+
+    if (!starterPrompts.length) {
+      anchor.innerHTML = "";
+      anchor.style.display = "none";
+      return;
+    }
+
+    var host = form.parentElement || form;
+    host.style.display = "flex";
+    host.style.flexDirection = "column";
+    host.style.alignItems = "stretch";
+    host.style.gap = "12px";
+    host.style.overflow = "visible";
+
+    anchor.style.display = "block";
+    anchor.style.position = "relative";
+    anchor.style.left = "";
+    anchor.style.width = "100%";
+    anchor.style.bottom = "";
+    anchor.style.zIndex = "";
+    anchor.style.order = "2";
+
+    var hash = starterPrompts.join("||");
+    var existing = anchor.querySelector(".starter-chips-rendered");
+    if (existing && existing.dataset.hash === hash) return;
+    if (existing) existing.remove();
+
+    var container = document.createElement("div");
+    container.className = "starter-chips-rendered starter-prompts-grid";
+    container.dataset.hash = hash;
+
+    for (var j = 0; j < starterPrompts.length; j++) {
+      var chip = document.createElement("div");
+      chip.className = "suggestion-chip starter-chip";
+      chip.dataset.starterPrompt = starterPrompts[j];
+
+      var textSpan = document.createElement("span");
+      textSpan.className = "suggestion-chip-text starter-chip-text";
+      textSpan.textContent = starterPrompts[j];
+      chip.appendChild(textSpan);
+
+      container.appendChild(chip);
+    }
+
+    anchor.appendChild(container);
+  }
+
+  function getStarterTextsFromDom() {
+    var texts = [];
+    var seen = {};
+    var starterTextEls = document.querySelectorAll(".starter-chip-text");
+    for (var i = 0; i < starterTextEls.length; i++) {
+      var text = (starterTextEls[i].textContent || "").trim().replace(/\s+/g, " ");
+      if (text && !seen[text]) {
+        seen[text] = true;
+        texts.push(text);
+      }
+    }
+    return texts;
+  }
+
+  function buildStarterContainer(texts) {
+    var container = document.createElement("div");
+    container.className = "suggestion-chips-container starter-chips-container starter-chips-rendered";
+
+    var label = document.createElement("div");
+    label.className = "suggestion-chips-label";
+    label.textContent = "Try one of these prompts";
+    container.appendChild(label);
+
+    for (var i = 0; i < texts.length; i++) {
+      var chip = document.createElement("div");
+      chip.className = "suggestion-chip starter-chip";
+      chip.dataset.starterPrompt = texts[i];
+
+      var textSpan = document.createElement("span");
+      textSpan.className = "suggestion-chip-text starter-chip-text";
+      textSpan.textContent = texts[i];
+      chip.appendChild(textSpan);
+
+      container.appendChild(chip);
+    }
+    return container;
+  }
+
+  function hideOriginalStarterBlocks(anchor) {
+    var blocks = document.querySelectorAll(".starter-chips-container");
+    for (var i = 0; i < blocks.length; i++) {
+      var block = blocks[i];
+      if (anchor && anchor.contains(block)) continue;
+      block.style.display = "none";
+      var step = block.closest(".step");
+      if (step) step.style.display = "none";
+    }
+  }
+
+  function positionStarterChipsBelowInput() {
+    // Legacy no-op: starter prompts are now rendered in a dedicated fixed tray.
+    var sourceBlocks = document.querySelectorAll(".starter-chips-container");
+    for (var i = 0; i < sourceBlocks.length; i++) {
+      var step = sourceBlocks[i].closest(".step");
+      sourceBlocks[i].style.display = "none";
+      if (step) step.style.display = "none";
+    }
+  }
+
   // ─── Follow-up suggestion chips ────────────────────────────
 
   function enhanceSuggestionChips() {
     var chips = document.querySelectorAll(".suggestion-chip");
     for (var i = 0; i < chips.length; i++) {
       var chip = chips[i];
+      if (chip.classList.contains("starter-chip")) continue;
       if (chip.dataset.enhanced) continue;
       chip.dataset.enhanced = "true";
 
@@ -230,7 +422,11 @@
 
   function applyUiUpdates() {
     hideFeedbackButtons();
+    loadStarterPrompts();
     enhanceStarterPrompts();
+    enhanceCustomStarterChips();
+    renderStarterPromptsBelowInput();
+    positionStarterChipsBelowInput();
     enhanceSuggestionChips();
   }
 
@@ -251,6 +447,7 @@
       return;
     }
     observer.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener("resize", scheduleApply);
     scheduleApply();
   }
 

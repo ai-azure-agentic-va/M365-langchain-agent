@@ -1,7 +1,7 @@
 """Chainlit data layer backed by CosmosDB.
 
 Enables the conversation history sidebar in Chainlit UI.
-All users can see all threads (no auth filtering).
+Threads are scoped per user via user_id (Entra ID OID) when SSO is enabled.
 Reads/writes to the same CosmosDB container used by cosmos_store.py.
 """
 

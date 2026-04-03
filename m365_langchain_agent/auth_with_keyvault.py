@@ -1,4 +1,18 @@
-"""Entra ID SSO authentication for Chainlit UI.
+"""Entra ID SSO authentication for Chainlit UI - WITH KEY VAULT INTEGRATION.
+
+This is an updated version of auth.py that demonstrates how to use the
+secrets_manager module to fetch ENTRA_CLIENT_SECRET from Azure Key Vault
+instead of hardcoding it in environment variables.
+
+Key changes from original auth.py:
+1. Import secrets_manager module: get_entra_client_secret()
+2. Replace ENTRA_CLIENT_SECRET = os.environ.get(...) with get_entra_client_secret()
+3. All other logic remains the same (SESSION_SECRET still from environment)
+
+To use this version:
+1. Rename this file to auth.py (backup the original first)
+   OR
+2. Copy the changes to your existing auth.py
 
 Implements OIDC Authorization Code Flow with PKCE for browser-based authentication.
 Uses MSAL (Microsoft Authentication Library) and signed session cookies.
@@ -6,10 +20,17 @@ Uses MSAL (Microsoft Authentication Library) and signed session cookies.
 Environment variables required:
     ENTRA_TENANT_ID: Azure AD tenant ID
     ENTRA_CLIENT_ID: App Registration client ID
-    ENTRA_CLIENT_SECRET: App Registration client secret
     ENTRA_REDIRECT_URI: OAuth callback URL (e.g., https://<fqdn>/auth/callback)
     SESSION_SECRET: Secret key for encrypting session cookies
     AI_VA_ADMINS_GROUP_ID: Optional - Group OID for admins
+
+    # Key Vault configuration (NEW)
+    USE_KEY_VAULT: Set to "true" to enable Key Vault (default: false)
+    KEY_VAULT_URL: https://kv-nfcu-ai-foundry.vault.azure.net/
+    ENTRA_CLIENT_SECRET_NAME: ETSVA-ContainerApp-ETSVA-DEV
+
+Secret from Key Vault (if USE_KEY_VAULT=true):
+    ENTRA_CLIENT_SECRET: Fetched from Key Vault using ENTRA_CLIENT_SECRET_NAME
 """
 
 import logging
@@ -22,15 +43,31 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from fastapi import Request, Response
 from fastapi.responses import RedirectResponse
 
+# ============================================================================
+# KEY VAULT INTEGRATION - Import secrets manager
+# ============================================================================
+from m365_langchain_agent.secrets_manager import get_entra_client_secret
+
 logger = logging.getLogger(__name__)
 
-# Environment configuration
+# ============================================================================
+# Environment configuration (non-secret values)
+# ============================================================================
 ENTRA_TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "")
 ENTRA_CLIENT_ID = os.environ.get("ENTRA_CLIENT_ID", "")
-ENTRA_CLIENT_SECRET = os.environ.get("ENTRA_CLIENT_SECRET", "")
 ENTRA_REDIRECT_URI = os.environ.get("ENTRA_REDIRECT_URI", "")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "")
 AI_VA_ADMINS_GROUP_ID = os.environ.get("AI_VA_ADMINS_GROUP_ID", "")
+
+# ============================================================================
+# Secret from Key Vault (or .env based on USE_KEY_VAULT setting)
+# ============================================================================
+# OLD WAY (hardcoded from .env):
+#   ENTRA_CLIENT_SECRET = os.environ.get("ENTRA_CLIENT_SECRET", "")
+#
+# NEW WAY (Key Vault with automatic fallback to .env for local dev):
+ENTRA_CLIENT_SECRET = get_entra_client_secret()
+# ============================================================================
 
 # Session cookie settings
 SESSION_COOKIE_NAME = "m365_sso_session"
@@ -50,7 +87,7 @@ def get_msal_app():
         if not ENTRA_TENANT_ID or not ENTRA_CLIENT_ID or not ENTRA_CLIENT_SECRET:
             raise ValueError(
                 "Entra ID SSO not configured. Set ENTRA_TENANT_ID, ENTRA_CLIENT_ID, "
-                "ENTRA_CLIENT_SECRET, ENTRA_REDIRECT_URI, SESSION_SECRET environment variables."
+                "and ensure ENTRA_CLIENT_SECRET is available in Key Vault or environment."
             )
 
         import msal
@@ -62,6 +99,7 @@ def get_msal_app():
             client_credential=ENTRA_CLIENT_SECRET,
         )
         logger.info(f"[Auth] MSAL initialized: tenant={ENTRA_TENANT_ID}, client_id={ENTRA_CLIENT_ID}")
+        logger.info(f"[Auth] Client secret source: {'Key Vault' if os.environ.get('USE_KEY_VAULT', 'false').lower() == 'true' else 'Environment variables'}")
 
     return _msal_app
 
