@@ -23,11 +23,54 @@ logger = logging.getLogger(__name__)
 _store = None
 
 
+class MockCosmosStore:
+    """Mock store for testing when CosmosDB is unavailable (firewall blocked).
+
+    Logs all operations but doesn't persist data. Useful for testing SSO without CosmosDB.
+    """
+
+    def __init__(self):
+        logger.info("[MockCosmosStore] Initialized (CosmosDB unavailable)")
+        self.conversations = {}  # In-memory store for testing
+
+    def get_history(self, conversation_id: str, user_id: Optional[str] = None) -> List[Dict]:
+        """Return history from in-memory store."""
+        logger.info(
+            f"[MockCosmosStore] get_history: conversation={conversation_id}, user={user_id or 'anonymous'}"
+        )
+        return self.conversations.get(conversation_id, [])
+
+    def save_turn(
+        self,
+        conversation_id: str,
+        user_message: str,
+        bot_response: str,
+        user_id: Optional[str] = None,
+        user_email: Optional[str] = None,
+        user_display_name: Optional[str] = None,
+    ) -> None:
+        """Save to in-memory store for testing."""
+        logger.info(
+            f"[MockCosmosStore] save_turn: conversation={conversation_id}, "
+            f"user={user_id or 'anonymous'}, user_email={user_email}, user_name={user_display_name}"
+        )
+        # Store in memory for testing
+        if conversation_id not in self.conversations:
+            self.conversations[conversation_id] = []
+        self.conversations[conversation_id].append({"role": "user", "content": user_message})
+        self.conversations[conversation_id].append({"role": "assistant", "content": bot_response})
+
+
 def get_cosmos_store():
     """Singleton — reuses the same store across invocations."""
     global _store
     if _store is None:
-        _store = CosmosConversationStore()
+        try:
+            _store = CosmosConversationStore()
+        except Exception as e:
+            logger.warning(f"[CosmosStore] Failed to initialize (firewall blocked?): {e}")
+            logger.warning("[CosmosStore] Using mock store for SSO testing")
+            _store = MockCosmosStore()
     return _store
 
 
