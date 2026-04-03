@@ -25,6 +25,19 @@
     return document.querySelector("textarea");
   }
 
+  function ensureLogoutButton() {
+    var existing = document.querySelector("#sso-logout-button");
+    if (existing) return;
+
+    var button = document.createElement("a");
+    button.id = "sso-logout-button";
+    button.href = "/chat/auth/logout";
+    button.textContent = "Log out";
+    button.setAttribute("aria-label", "Log out");
+
+    document.body.appendChild(button);
+  }
+
   /**
    * Fill the textarea and update React's controlled-input state.
    *
@@ -279,6 +292,7 @@
   // ─── Main loop ─────────────────────────────────────────────
 
   function applyUiUpdates() {
+    ensureLogoutButton();
     hideFeedbackButtons();
     loadStarterData();
     enhanceNativeStarters();
