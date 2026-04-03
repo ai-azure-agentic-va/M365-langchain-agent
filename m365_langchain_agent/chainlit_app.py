@@ -74,137 +74,15 @@ from m365_langchain_agent.agent import (
     DEFAULT_TOP_K,
     DEFAULT_TEMPERATURE,
     DEFAULT_MODEL,
-    _STTM_KEYWORDS,
 )
 from m365_langchain_agent.cosmos_store import get_cosmos_store
 from m365_langchain_agent.chainlit_data_layer import CosmosDataLayer
 
-# ---------------------------------------------------------------------------
-# Query-intent detection (heuristic, no LLM) for reasoning-style trace text
-# ---------------------------------------------------------------------------
-_COMPARISON_KEYWORDS = frozenset({
-    "difference", "differences", "compare", "comparison", "vs", "versus",
-    "distinguish", "contrast", "differ", "similar", "similarities",
-})
-
-# 5-step agent reasoning narrative templates.
-# Each template provides text for the 5 mandatory UI steps:
-#   1. intent      — Intent Understanding (what the user is asking)
-#   2. strategy    — Strategy (how the agent will approach it)
-#   3. retrieval   — Retrieval Summary (what was found)
-#   4. reasoning   — Reasoning / Focus (how the agent will synthesize)
-#   5. answer_prep — Answer Preparation (final assembly)
-_REASONING_TEMPLATES: dict[str, dict] = {
-    "comparison": {
-        "intent":       "Understanding your comparison request",
-        "strategy":     "Determining approach — comparing across sources",
-        "retrieval":    "Reviewing {n} retrieved documents",
-        "reasoning":    "Identifying key differences and similarities",
-        "answer_prep":  "Preparing a structured comparison",
-        "review_unit":  "documents",
-    },
-    "sttm": {
-        "intent":       "Understanding your data lineage question",
-        "strategy":     "Determining approach — tracing field mappings across layers",
-        "retrieval":    "Reviewing {n} retrieved mappings",
-        "reasoning":    "Identifying transformation logic and hop-by-hop lineage",
-        "answer_prep":  "Preparing end-to-end lineage summary",
-        "review_unit":  "mappings",
-    },
-    "general": {
-        "intent":       "Understanding your question",
-        "strategy":     "Determining approach — searching knowledge base",
-        "retrieval":    "Reviewing {n} retrieved documents",
-        "reasoning":    "Identifying key insights from retrieved information",
-        "answer_prep":  "Preparing a comprehensive answer",
-        "review_unit":  "documents",
-    },
-}
-
-
-def _classify_query(query: str) -> str:
-    """Classify query intent for reasoning trace text. Returns template key."""
-    q = query.lower()
-    if any(kw in q for kw in _STTM_KEYWORDS):
-        return "sttm"
-    words = set(q.split())
-    if words & _COMPARISON_KEYWORDS:
-        return "comparison"
-    return "general"
-
-
-def _render_event(evt: dict, template: dict) -> list[tuple[str, str]] | None:
-    """Map an agent event to one or more 5-step reasoning narrative lines.
-
-    Returns a list of (key, text) pairs, or None to skip.
-    The key lets the UI replace an in-progress line with its completed version.
-
-    5-step structure (always shown in this order):
-      1. intent      — Intent Understanding
-      2. strategy    — Strategy
-      3. retrieval   — Retrieval Summary
-      4. reasoning   — Reasoning / Focus
-      5. answer_prep — Answer Preparation
-    """
-    name = evt.get("event", "")
-
-    if name == "rewriting_query":
-        # Step 1 starts in-progress (query is being refined)
-        return [("intent", f"… {template['intent']}")]
-
-    if name == "query_rewritten":
-        # Step 1 completes
-        return [("intent", f"✔ {template['intent']}")]
-
-    if name == "search_start":
-        # Step 1 completes (if not already), Step 2 starts
-        return [
-            ("intent", f"✔ {template['intent']}"),
-            ("strategy", f"… {template['strategy']}"),
-        ]
-
-    if name == "search_complete":
-        n = evt.get("sources", 0)
-        retrieval_text = template["retrieval"].format(n=n)
-        # Step 2 completes, Step 3 completes, Step 4 starts
-        return [
-            ("strategy", f"✔ {template['strategy']}"),
-            ("retrieval", f"✔ {retrieval_text}"),
-            ("reasoning", f"… {template['reasoning']}"),
-        ]
-
-    if name == "refining_search":
-        # Retry: update strategy to show refinement
-        return [("strategy", f"… Refining search for better results")]
-
-    if name == "retry_search_complete":
-        n = evt.get("sources", 0)
-        retrieval_text = template["retrieval"].format(n=n)
-        # Same as search_complete but after retry
-        return [
-            ("strategy", f"✔ Refined search strategy"),
-            ("retrieval", f"✔ {retrieval_text}"),
-            ("reasoning", f"… {template['reasoning']}"),
-        ]
-
-    if name == "generating":
-        # Step 4 completes, Step 5 starts
-        return [
-            ("reasoning", f"✔ {template['reasoning']}"),
-            ("answer_prep", f"… {template['answer_prep']}"),
-        ]
-
-    return None
-
 
 # --- Data layer (conversation history sidebar) ---
-# Disabled when DISABLE_DATA_LAYER=true (e.g. local dev with CosmosDB firewall)
-_DISABLE_DATA_LAYER = os.environ.get("DISABLE_DATA_LAYER", "false").lower().strip() == "true"
-
-if not _DISABLE_DATA_LAYER:
-    @cl.data_layer
-    def get_data_layer():
-        return CosmosDataLayer()
+@cl.data_layer
+def get_data_layer():
+    return CosmosDataLayer()
 
 
 # --- Auth: read user from SSO session (injected by middleware) ---
@@ -246,19 +124,13 @@ async def rename_author(author: str) -> str:
     return author
 
 
-# Starter prompts toggle — set SHOW_STARTER_PROMPTS=false to hide starter cards
-SHOW_STARTER_PROMPTS = os.environ.get("SHOW_STARTER_PROMPTS", "true").lower().strip() == "true"
-
-
 @cl.set_starters
 async def set_starters():
     """Card-style starter prompts shown in the empty chat state.
 
     Reads from STARTER_PROMPTS env var (JSON array of {label, message} objects).
-    Returns None (no starters) if disabled or env var is missing/empty.
+    Returns None (no starters) if the env var is missing or empty.
     """
-    if not SHOW_STARTER_PROMPTS:
-        return None
     raw = os.environ.get("STARTER_PROMPTS", "").strip()
     if not raw:
         return None
@@ -270,7 +142,7 @@ async def set_starters():
     if not items:
         return None
     return [
-        cl.Starter(label=item.get("label", item["message"]), message=item["message"])
+        cl.Starter(label=item["message"], message=item["message"])
         for item in items
         if item.get("message")
     ]
@@ -298,8 +170,22 @@ def _build_suggestion_chips_html(suggestions: list[str]) -> str:
     )
 
 
-async def _init_chat_settings():
-    """Initialize ChatSettings widgets and store in session. Shared by start/resume."""
+@cl.on_chat_start
+async def on_chat_start():
+    """Initialize a new conversation session with configurable settings."""
+    conversation_id = f"chainlit-{uuid.uuid4().hex[:12]}"
+    cl.user_session.set("conversation_id", conversation_id)
+    logger.info(f"[Chainlit] New session: conversation_id={conversation_id}")
+
+    # Welcome message
+    await cl.Message(
+        content=(
+            "Welcome to ETS Virtual Assistant. Ask a question to instantly search "
+            "our Knowledge Base and internal resources."
+        ),
+        author="assistant",
+    ).send()
+
     if SHOW_CHAT_SETTINGS:
         available_models = get_available_models()
         settings = await cl.ChatSettings(
@@ -342,20 +228,6 @@ async def _init_chat_settings():
         cl.user_session.set("settings", {})
 
 
-@cl.on_chat_start
-async def on_chat_start():
-    """Initialize a new conversation session with configurable settings."""
-    conversation_id = f"chainlit-{uuid.uuid4().hex[:12]}"
-    cl.user_session.set("conversation_id", conversation_id)
-    logger.info(f"[Chainlit] New session: conversation_id={conversation_id}")
-
-    # NOTE: Do NOT send cl.Message() here — any assistant_message causes
-    # Chainlit's React to unmount #welcome-screen (including starter cards).
-    # The starter cards serve as the greeting on the empty chat screen.
-
-    await _init_chat_settings()
-
-
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
     """Resume a previous conversation thread from the sidebar."""
@@ -363,7 +235,46 @@ async def on_chat_resume(thread: ThreadDict):
     cl.user_session.set("conversation_id", conversation_id)
     logger.info(f"[Chainlit] Resumed thread: conversation_id={conversation_id}")
 
-    await _init_chat_settings()
+    if SHOW_CHAT_SETTINGS:
+        available_models = get_available_models()
+        settings = await cl.ChatSettings(
+            [
+                Select(
+                    id="model",
+                    label="Model",
+                    values=available_models,
+                    initial_value=DEFAULT_MODEL if DEFAULT_MODEL in available_models else available_models[0],
+                    description="Azure OpenAI deployment to use for generation.",
+                ),
+                Slider(
+                    id="top_k",
+                    label="Top K (Retrieved Chunks)",
+                    initial=DEFAULT_TOP_K,
+                    min=1,
+                    max=20,
+                    step=1,
+                    description="Number of chunks to retrieve from AI Search.",
+                ),
+                Slider(
+                    id="temperature",
+                    label="Temperature",
+                    initial=DEFAULT_TEMPERATURE,
+                    min=0.0,
+                    max=1.0,
+                    step=0.05,
+                    description="LLM randomness. Lower = more deterministic, higher = more creative.",
+                ),
+                TextInput(
+                    id="system_prompt",
+                    label="System Prompt",
+                    initial=SYSTEM_PROMPT,
+                    description="Instructions for the LLM. Edit to change behavior.",
+                ),
+            ]
+        ).send()
+        cl.user_session.set("settings", settings)
+    else:
+        cl.user_session.set("settings", {})
 
 
 @cl.on_settings_update
@@ -424,7 +335,7 @@ async def on_message(message: cl.Message):
         logger.error(f"[Chainlit] CosmosDB read failed: {e}")
         history = []
 
-    # Stream the RAG agent response with inline thinking trace
+    # Stream the RAG agent response token by token
     msg = cl.Message(content="", author="assistant")
     await msg.send()
 
@@ -436,18 +347,6 @@ async def on_message(message: cl.Message):
     original_query = ""
     query_rewritten = False
 
-    # Thinking trace: ordered list of (key, text) pairs.
-    # New events with the same key replace the previous entry (start → complete).
-    trace_lines: list[tuple[str, str]] = []
-    reasoning_template = _REASONING_TEMPLATES[_classify_query(user_text)]
-    streaming_started = False
-
-    # Show Step 1 (Intent Understanding) immediately so the user sees
-    # the reasoning narrative begin before any backend events arrive.
-    trace_lines.append(("intent", f"… {reasoning_template['intent']}"))
-    msg.content = trace_lines[0][1]
-    await msg.update()
-
     async for chunk in invoke_agent_stream(
         query=user_text,
         conversation_history=history,
@@ -456,70 +355,16 @@ async def on_message(message: cl.Message):
         system_prompt=system_prompt if system_prompt != SYSTEM_PROMPT else None,
         model_name=model if model != DEFAULT_MODEL else None,
     ):
-        if isinstance(chunk, dict):
-            if chunk.get("type") == "event":
-                evt_name = chunk.get("event", "")
-                rendered = _render_event(chunk, reasoning_template)
-                if rendered:
-                    for key, text in rendered:
-                        # Replace existing entry with same key, or append new
-                        replaced = False
-                        for i, (k, _) in enumerate(trace_lines):
-                            if k == key:
-                                trace_lines[i] = (key, text)
-                                replaced = True
-                                break
-                        if not replaced:
-                            trace_lines.append((key, text))
-                    msg.content = "<br>".join(t for _, t in trace_lines)
-                    await msg.update()
-            elif chunk.get("type") == "metadata":
-                answer = chunk["answer"]
-                sources = chunk["sources"]
-                raw_chunks = chunk.get("raw_chunks", [])
-                full_prompt = chunk.get("full_prompt", "")
-                search_query = chunk.get("search_query", "")
-                original_query = chunk.get("original_query", "")
-                query_rewritten = chunk.get("query_rewritten", False)
+        if isinstance(chunk, dict) and chunk.get("type") == "metadata":
+            answer = chunk["answer"]
+            sources = chunk["sources"]
+            raw_chunks = chunk.get("raw_chunks", [])
+            full_prompt = chunk.get("full_prompt", "")
+            search_query = chunk.get("search_query", "")
+            original_query = chunk.get("original_query", "")
+            query_rewritten = chunk.get("query_rewritten", False)
         else:
-            if not streaming_started:
-                streaming_started = True
-                # Mark the last in-progress line as done, then collapse
-                for i, (k, t) in enumerate(trace_lines):
-                    if t.startswith("…"):
-                        trace_lines[i] = (k, t.replace("…", "✔", 1))
-                if trace_lines:
-                    collapsed = "<br>".join(t for _, t in trace_lines)
-                    msg.content = (
-                        '<details class="thinking-accordion">'
-                        '<summary class="thinking-summary">Thinking</summary>'
-                        f'<div class="thinking-body">{collapsed}</div>'
-                        "</details>\n\n"
-                    )
-                else:
-                    msg.content = ""
-                await msg.update()
             await msg.stream_token(chunk)
-
-    # If no streaming occurred (e.g. blocked by quality gate), render the
-    # metadata answer directly and collapse the thinking trace.
-    if not streaming_started and answer:
-        # Auto-complete any in-progress trace lines
-        for i, (k, t) in enumerate(trace_lines):
-            if t.startswith("…"):
-                trace_lines[i] = (k, t.replace("…", "✔", 1))
-        if trace_lines:
-            collapsed = "<br>".join(t for _, t in trace_lines)
-            msg.content = (
-                '<details class="thinking-accordion">'
-                '<summary class="thinking-summary">Thinking</summary>'
-                f'<div class="thinking-body">{collapsed}</div>'
-                "</details>\n\n"
-            )
-        else:
-            msg.content = ""
-        msg.content += answer
-        await msg.update()
 
     # Append source links after streaming completes
     source_lines = []
@@ -535,9 +380,9 @@ async def on_message(message: cl.Message):
 
     # Only append Sources block if the LLM answer doesn't already list citations
     answer_lower = answer.lower()
-    has_citation_section = "citations:" in answer_lower or "sources:" in answer_lower or "cited sources:" in answer_lower
+    has_citation_section = "citations:" in answer_lower or "sources:" in answer_lower
     if source_lines and not has_citation_section:
-        await msg.stream_token("\n\n---\n**Cited Sources:**\n" + "\n".join(source_lines))
+        await msg.stream_token("\n\n---\n**Sources:**\n" + "\n".join(source_lines))
 
     await msg.update()
 

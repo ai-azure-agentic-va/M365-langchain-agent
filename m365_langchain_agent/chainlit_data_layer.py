@@ -61,8 +61,8 @@ class CosmosDataLayer(BaseDataLayer):
         try:
             cosmos = get_cosmos_store()
 
-            # Require an authenticated user for sidebar thread listing.
-            # Never expose all threads to the unauthenticated/default user.
+            # Filter by user_id if provided in filters.userId
+            # If no userId filter, show all threads (backward compatibility for legacy data)
             if filters.userId and filters.userId != "default-user":
                 query = "SELECT * FROM c WHERE c.user_id = @user_id ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
                 params = [
@@ -74,11 +74,13 @@ class CosmosDataLayer(BaseDataLayer):
                     query = "SELECT * FROM c WHERE c.user_id = @user_id AND c.updated_at < @cursor ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
                     params.append({"name": "@cursor", "value": float(pagination.cursor)})
             else:
-                logger.info("[DataLayer] Unauthenticated thread listing blocked")
-                return PaginatedResponse(
-                    data=[],
-                    pageInfo={"hasNextPage": False, "startCursor": None, "endCursor": None},
-                )
+                # Legacy: show all threads (for backward compatibility)
+                query = "SELECT * FROM c ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
+                params = [{"name": "@limit", "value": pagination.first or 20}]
+
+                if pagination.cursor:
+                    query = "SELECT * FROM c WHERE c.updated_at < @cursor ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
+                    params.append({"name": "@cursor", "value": float(pagination.cursor)})
 
             items = list(cosmos.container.query_items(
                 query=query,

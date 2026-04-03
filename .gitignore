@@ -10,4 +10,3 @@ venv/
 .pytest_cache/
 .chainlit/
 .files/
-*.log
