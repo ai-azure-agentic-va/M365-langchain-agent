@@ -311,33 +311,33 @@ async def root():
 # SSO / Authentication (Chainlit UI only)
 # ---------------------------------------------------------------------------
 
-@app.get("/auth/login")
+@app.get("/chat/auth/login")
 async def auth_login(request: Request):
     """Initiate Entra ID SSO login flow."""
     from m365_langchain_agent.auth import login_route
     return login_route(request)
 
 
-@app.get("/auth/callback")
+@app.get("/chat/auth/callback")
 async def auth_callback(request: Request):
     """Handle OAuth callback from Entra ID."""
     from m365_langchain_agent.auth import callback_route
     return callback_route(request)
 
 
-@app.get("/auth/logout")
+@app.get("/chat/auth/logout")
 async def auth_logout(request: Request):
     """Logout and clear SSO session."""
     from m365_langchain_agent.auth import logout_route
     return logout_route(request)
 
 
-@app.get("/auth/error")
+@app.get("/chat/auth/error")
 async def auth_error(request: Request):
     """Auth error page."""
     message = request.query_params.get("message", "Authentication failed")
     return Response(
-        content=f"<html><body><h1>Authentication Error</h1><p>{message}</p><p><a href='/auth/login'>Try again</a></p></body></html>",
+        content=f"<html><body><h1>Authentication Error</h1><p>{message}</p><p><a href='/chat/auth/login'>Try again</a></p></body></html>",
         media_type="text/html",
     )
 
@@ -362,6 +362,7 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
         "/chat/public/",      # Static assets (CSS, JS, images)
         "/chat/favicon",      # Favicon
         "/chat/files/",       # Uploaded files
+        "/chat/auth/",        # SSO auth routes (login, callback, logout, error)
     )
     # Exact paths that are internal Chainlit API
     _PASSTHROUGH_EXACT = {
@@ -392,7 +393,7 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
                     or path in self._PASSTHROUGH_EXACT
                 )
                 if not is_passthrough:
-                    return RedirectResponse(url="/auth/login?next=/chat/")
+                    return RedirectResponse(url="/chat/auth/login?next=/chat/")
 
         response = await call_next(request)
         return response

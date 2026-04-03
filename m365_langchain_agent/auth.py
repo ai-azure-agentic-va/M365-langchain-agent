@@ -307,7 +307,7 @@ def logout_route(request: Request) -> RedirectResponse:
     """
     # Build post-logout redirect (back to login)
     base_url = str(request.base_url).rstrip("/")
-    post_logout_uri = f"{base_url}/auth/login"
+    post_logout_uri = f"{base_url}/chat/auth/login"
 
     logout_url = build_logout_url(post_logout_uri)
 

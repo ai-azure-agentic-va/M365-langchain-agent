@@ -185,10 +185,10 @@ az containerapp update \
     --set-env-vars \
         ENTRA_CLIENT_SECRET=secretref:entra-client-secret \
         SESSION_SECRET=secretref:session-secret \
-        ENTRA_REDIRECT_URI="https://$FQDN/auth/callback" \
+        ENTRA_REDIRECT_URI="https://$FQDN/chat/auth/callback" \
     --only-show-errors -o none
 
-echo "  Secrets added and ENTRA_REDIRECT_URI set to https://$FQDN/auth/callback"
+echo "  Secrets added and ENTRA_REDIRECT_URI set to https://$FQDN/chat/auth/callback"
 
 # Step 6: Get the FQDN and verify
 echo "[6/6] Getting Container App URL..."
