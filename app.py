@@ -219,8 +219,13 @@ async def starter_prompts():
     except json.JSONDecodeError:
         logger.warning("[App] STARTER_PROMPTS is not valid JSON")
         return {"prompts": []}
-    prompts = [item.get("message", "").strip() for item in items if isinstance(item, dict)]
-    prompts = [p for p in prompts if p]
+    prompts = []
+    for item in items:
+        if isinstance(item, dict) and item.get("message", "").strip():
+            prompts.append({
+                "label": item.get("label", item["message"]).strip(),
+                "message": item["message"].strip(),
+            })
     return {"prompts": prompts}
 
 
