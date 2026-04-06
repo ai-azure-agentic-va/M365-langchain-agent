@@ -127,15 +127,17 @@ def read_session_cookie(cookie_value: str, max_age: int = None) -> Optional[Dict
         return None
 
 
-def should_refresh_session_cookie(cookie_value: str, refresh_threshold: float = 0.5) -> bool:
+def should_refresh_session_cookie(cookie_value: str, refresh_threshold: float = 0.5, min_age: int = 30) -> bool:
     """Check if a session cookie should be refreshed.
 
-    Only refreshes if the cookie is older than refresh_threshold * SESSION_IDLE_TIMEOUT.
-    This prevents unnecessary page reloads while maintaining session security.
+    Only refreshes if the cookie is older than refresh_threshold * SESSION_IDLE_TIMEOUT
+    and older than min_age seconds. This prevents unnecessary page reloads while
+    maintaining session security.
 
     Args:
         cookie_value: The session cookie value
         refresh_threshold: Fraction of idle timeout before refresh (default: 0.5 = 50%)
+        min_age: Minimum age in seconds before refresh (default: 30)
 
     Returns:
         True if cookie should be refreshed, False otherwise
@@ -153,6 +155,11 @@ def should_refresh_session_cookie(cookie_value: str, refresh_threshold: float = 
         # Calculate cookie age
         age = time.time() - timestamp
         refresh_age = SESSION_IDLE_TIMEOUT * refresh_threshold
+
+        # Never refresh very new cookies (prevents double reload after login)
+        if age < min_age:
+            logger.debug(f"[Auth] Cookie too new ({age:.0f}s < {min_age}s) - skipping refresh")
+            return False
 
         # Refresh if cookie is older than threshold
         should_refresh = age >= refresh_age
@@ -368,10 +375,11 @@ def logout_route(request: Request) -> RedirectResponse:
     response.delete_cookie(key="oauth_state")
     response.delete_cookie(key=CHAINLIT_AUTH_COOKIE_NAME)
     response.delete_cookie(key=CHAINLIT_SESSION_COOKIE_NAME)
+    # Set a longer-lived signed-out cookie (1 hour) to ensure prompt=login is used
     response.set_cookie(
         key=SIGNED_OUT_COOKIE_NAME,
         value="1",
-        max_age=600,
+        max_age=3600,
         httponly=True,
         secure=SESSION_COOKIE_SECURE,
         samesite="lax",

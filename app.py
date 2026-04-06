@@ -332,20 +332,31 @@ async def auth_error_chat(request: Request):
 
 @app.get("/chat/auth/signed-out")
 async def auth_signed_out():
-    """Signed-out landing page with explicit re-login action."""
+    """Signed-out landing page with auto-redirect to re-login."""
     return Response(
         content=(
             "<html><body style='font-family: Inter, Arial, sans-serif; padding: 32px;'>"
             "<h1>Signed out</h1>"
             "<p>You have been signed out of the ETS Virtual Assistant.</p>"
+            "<p style='color: #667085;'>Redirecting to sign in page in <span id='countdown'>2</span> seconds...</p>"
             "<script>"
             "try { localStorage.clear(); } catch (e) {}"
             "try { sessionStorage.clear(); } catch (e) {}"
+            "let seconds = 2;"
+            "const countdownEl = document.getElementById('countdown');"
+            "const interval = setInterval(() => {"
+            "  seconds--;"
+            "  if (countdownEl) countdownEl.textContent = seconds;"
+            "  if (seconds <= 0) {"
+            "    clearInterval(interval);"
+            "    window.location.href = '/chat/auth/login?prompt=login';"
+            "  }"
+            "}, 1000);"
             "</script>"
             "<p><a href='/chat/auth/login?prompt=login' "
             "style='display:inline-block;padding:10px 16px;border:1px solid #d0d5dd;"
             "border-radius:10px;text-decoration:none;color:#344054;font-weight:600;'>"
-            "Sign in again</a></p>"
+            "Sign in now</a></p>"
             "</body></html>"
         ),
         media_type="text/html",
@@ -399,9 +410,14 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
                 response = await call_next(request)
 
                 # Only refresh cookie if it's older than 50% of idle timeout
-                # This prevents double-reload on sign-in while maintaining session security
+                # Skip refresh for WebSocket/Socket.IO connections to prevent interruptions
+                # Skip refresh if Referer is callback to prevent double reload after login
                 cookie_value = request.cookies.get(SESSION_COOKIE_NAME)
-                if cookie_value and should_refresh_session_cookie(cookie_value):
+                referer = request.headers.get("referer", "")
+                is_websocket = path.startswith("/chat/ws/")
+                is_after_callback = "/chat/auth/callback" in referer
+
+                if cookie_value and not is_websocket and not is_after_callback and should_refresh_session_cookie(cookie_value):
                     cookie_data = {k: v for k, v in user.items() if k != "role"}
                     response.set_cookie(
                         key=SESSION_COOKIE_NAME,
@@ -420,9 +436,8 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
                     or path in self._PASSTHROUGH_EXACT
                 )
                 if not is_passthrough:
-                    login_url = "/chat/auth/login?next=/chat/"
-                    if request.cookies.get(SIGNED_OUT_COOKIE_NAME) == "1":
-                        login_url += "&prompt=login"
+                    # Always force login prompt to prevent cached SSO sessions
+                    login_url = "/chat/auth/login?next=/chat/&prompt=login"
                     return RedirectResponse(url=login_url)
 
         response = await call_next(request)
