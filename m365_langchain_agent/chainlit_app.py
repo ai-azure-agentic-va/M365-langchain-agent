@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 import chainlit as cl
 from chainlit.config import config as chainlit_config
-from chainlit.input_widget import Select, Slider, TextInput
+from chainlit.input_widget import Select, Slider, Switch, TextInput
 from chainlit.types import ThreadDict
 from chainlit.user import User
 
@@ -269,6 +269,19 @@ async def _init_chat_settings():
                     step=0.05,
                     description="LLM randomness. Lower = more deterministic, higher = more creative.",
                 ),
+                Switch(
+                    id="use_exhaustive_knn",
+                    label="Use Exhaustive KNN (instead of HNSW)",
+                    initial=False,
+                    description="OFF = HNSW approximate search (fast). ON = Exhaustive KNN exact search (slower, more accurate).",
+                ),
+                Select(
+                    id="search_strategy",
+                    label="Search Strategy",
+                    values=["hybrid", "vector", "keyword"],
+                    initial_value="hybrid",
+                    description="hybrid = keyword + vector. vector = embedding only. keyword = BM25 only.",
+                ),
                 TextInput(
                     id="system_prompt",
                     label="System Prompt",
@@ -309,9 +322,14 @@ async def on_settings_update(settings):
     model = settings.get("model", DEFAULT_MODEL)
     top_k = int(settings.get("top_k", DEFAULT_TOP_K))
     temp = settings.get("temperature", DEFAULT_TEMPERATURE)
-    logger.info(f"[Chainlit] Settings updated: model={model}, top_k={top_k}, temperature={temp}")
+    vector_mode = "Exhaustive KNN" if settings.get("use_exhaustive_knn", False) else "HNSW"
+    strategy = settings.get("search_strategy", "hybrid")
+    logger.info(f"[Chainlit] Settings updated: model={model}, top_k={top_k}, temperature={temp}, vector={vector_mode}, strategy={strategy}")
     await cl.Message(
-        content=f"Settings updated: **Model:** `{model}` | **Top K:** `{top_k}` | **Temperature:** `{temp}`",
+        content=(
+            f"Settings updated: **Model:** `{model}` | **Top K:** `{top_k}` | **Temperature:** `{temp}` "
+            f"| **Vector:** `{vector_mode}` | **Strategy:** `{strategy}`"
+        ),
         author="assistant",
     ).send()
 
@@ -339,6 +357,8 @@ async def on_message(message: cl.Message):
     top_k = int(settings.get("top_k", DEFAULT_TOP_K))
     temperature = float(settings.get("temperature", DEFAULT_TEMPERATURE))
     system_prompt = settings.get("system_prompt", SYSTEM_PROMPT)
+    vector_search_mode = "exhaustive_knn" if settings.get("use_exhaustive_knn", False) else "hnsw"
+    search_strategy = settings.get("search_strategy", "hybrid")
 
     logger.info(
         f"[Chainlit] Message: conversation={conversation_id}, "
@@ -382,6 +402,8 @@ async def on_message(message: cl.Message):
         temperature=temperature,
         system_prompt=system_prompt if system_prompt != SYSTEM_PROMPT else None,
         model_name=model if model != DEFAULT_MODEL else None,
+        vector_search_mode=vector_search_mode,
+        search_strategy=search_strategy,
     ):
         if isinstance(chunk, dict):
             if chunk.get("type") == "event":
@@ -466,6 +488,8 @@ async def on_message(message: cl.Message):
         semantic_config = os.environ.get("AZURE_SEARCH_SEMANTIC_CONFIG_NAME", "")
         embedding_model = os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
         prompt_type = "Custom" if system_prompt != SYSTEM_PROMPT else "Default"
+        vector_mode_label = "Exhaustive KNN (exact)" if vector_search_mode == "exhaustive_knn" else "HNSW (approximate)"
+        strategy_label = {"hybrid": "Hybrid (keyword + vector)", "vector": "Vector Only", "keyword": "Keyword Only"}.get(search_strategy, search_strategy)
 
         def _to_multiline_html(text: str, limit: int = None) -> str:
             safe = escape(text or "")
@@ -485,10 +509,18 @@ async def on_message(message: cl.Message):
         search_parts.append(f"<b>Index:</b> {escape(index_name)}<br>")
         search_parts.append(f"<b>Top K:</b> {top_k}<br>")
         search_parts.append(f"<b>Chunk Size:</b> 1024 tokens (200 overlap)<br>")
+        search_parts.append(f"<b>Vector Search Mode:</b> {vector_mode_label}<br>")
+        search_parts.append(f"<b>Search Strategy:</b> {strategy_label}<br>")
         search_parts.append("<hr>")
-        search_parts.append("<b>Hybrid Search Components:</b><br>")
-        search_parts.append(f'&nbsp;&nbsp;1. <b>Keyword (BM25):</b> search_text = "{escape(search_query or user_text)}"<br>')
-        search_parts.append(f"&nbsp;&nbsp;2. <b>Vector (HNSW Cosine):</b> 3072d embedding via {escape(embedding_model)}<br>")
+        search_parts.append(f"<b>Search Components ({strategy_label}):</b><br>")
+        if search_strategy in ("hybrid", "keyword"):
+            search_parts.append(f'&nbsp;&nbsp;1. <b>Keyword (BM25):</b> search_text = "{escape(search_query or user_text)}"<br>')
+        else:
+            search_parts.append("&nbsp;&nbsp;1. <b>Keyword (BM25):</b> DISABLED (vector-only mode)<br>")
+        if search_strategy in ("hybrid", "vector"):
+            search_parts.append(f"&nbsp;&nbsp;2. <b>Vector ({vector_mode_label}):</b> 3072d embedding via {escape(embedding_model)}<br>")
+        else:
+            search_parts.append("&nbsp;&nbsp;2. <b>Vector:</b> DISABLED (keyword-only mode)<br>")
         if semantic_config:
             search_parts.append(f'&nbsp;&nbsp;3. <b>Semantic Reranker:</b> config = "{escape(semantic_config)}"<br>')
         else:
@@ -539,9 +571,32 @@ async def on_message(message: cl.Message):
 
         settings_html = (
             f"Model: {model}<br>Top K: {top_k}<br>Temperature: {temperature}<br>"
+            f"Vector Search Mode: {vector_mode_label}<br>"
+            f"Search Strategy: {strategy_label}<br>"
             f"System Prompt: {prompt_type}<br>Index: {index_name}<br>"
             f"Sources: {len(sources)}<br>Chunks: {len(raw_chunks)}"
         )
+
+        # Build conversation history panel — the exact history sent to the LLM
+        all_messages = list(history) + [
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": answer},
+        ]
+        num_messages = len(all_messages)
+        num_exchanges = sum(1 for m in all_messages if m["role"] == "user")
+        conv_parts = [
+            f"<b>Conversation History Sent to LLM:</b> {num_exchanges} exchange{'s' if num_exchanges != 1 else ''} "
+            f"({num_messages} messages)<br><hr>"
+        ]
+        for i, m in enumerate(all_messages, 1):
+            role_label = "User" if m["role"] == "user" else "Assistant"
+            conv_parts.append(
+                f'<div style="margin-bottom:10px;padding:6px 8px;background:#f8fafc;border-left:3px solid {"#2563eb" if m["role"] == "user" else "#16a34a"};border-radius:4px;">'
+                f'<b>Message {i} — {role_label}</b><br>'
+                f'{_to_multiline_html(m.get("content", ""))}'
+                f'</div>'
+            )
+        conversation_html = "".join(conv_parts)
 
         accordion_msg = (
             '<div class="debug-accordion-group">'
@@ -549,6 +604,7 @@ async def on_message(message: cl.Message):
             f'<details class="debug-accordion"><summary class="debug-accordion-summary">Retrieved Chunks ({len(raw_chunks)})</summary><div class="debug-accordion-body">{chunks_html}</div></details>'
             f'<details class="debug-accordion"><summary class="debug-accordion-summary">Full LLM Prompt</summary><div class="debug-accordion-body">{prompt_html}</div></details>'
             f'<details class="debug-accordion"><summary class="debug-accordion-summary">Settings</summary><div class="debug-accordion-body">{settings_html}</div></details>'
+            f'<details class="debug-accordion"><summary class="debug-accordion-summary">Conversation History Sent to LLM ({num_exchanges} exchange{"s" if num_exchanges != 1 else ""}, {num_messages} messages)</summary><div class="debug-accordion-body">{conversation_html}</div></details>'
             "</div>"
         )
 

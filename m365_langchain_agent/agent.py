@@ -192,6 +192,8 @@ def _sttm_hop_search(
     base_query: str,
     hops: list[tuple[str, str]],
     top_k_per_hop: int = 8,
+    vector_search_mode: str = "hnsw",
+    search_strategy: str = "hybrid",
 ) -> list[dict]:
     """Run targeted searches for each STTM hop and merge results.
 
@@ -215,7 +217,11 @@ def _sttm_hop_search(
     for src, tgt in hops:
         hop_query = f"{base_query} {src} to {tgt}"
         try:
-            results = search_client.search(hop_query, top_k=top_k_per_hop)
+            results = search_client.search(
+                        hop_query, top_k=top_k_per_hop,
+                        vector_search_mode=vector_search_mode,
+                        search_strategy=search_strategy,
+                    )
             new_count = 0
             for doc in results:
                 doc_id = doc.get("content", "")[:200]
@@ -588,6 +594,8 @@ async def invoke_agent(
     system_prompt: str = None,
     model_name: str = None,
     filter_expr: str = None,
+    vector_search_mode: str = "hnsw",
+    search_strategy: str = "hybrid",
 ) -> AgentResult:
     """Invoke the RAG agent: search → deduplicate → generate → return structured result.
 
@@ -621,10 +629,16 @@ async def invoke_agent(
     sttm_hops = _detect_sttm_hops(query) if is_sttm else []
     if sttm_hops:
         logger.info(f"[Agent] STTM hop-by-hop mode: {len(sttm_hops)} hops detected")
-        raw_documents = _sttm_hop_search(search_client, search_query, sttm_hops)
+        raw_documents = _sttm_hop_search(
+            search_client, search_query, sttm_hops,
+            vector_search_mode=vector_search_mode, search_strategy=search_strategy,
+        )
         documents = raw_documents
     else:
-        raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
+        raw_documents = search_client.search(
+            search_query, top_k=effective_top_k, filter_expr=filter_expr,
+            vector_search_mode=vector_search_mode, search_strategy=search_strategy,
+        )
         logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}, sttm={is_sttm}) for: {search_query[:100]}")
         documents = raw_documents
 
@@ -648,7 +662,10 @@ async def invoke_agent(
             retry_triggered = True
             refined_query = await _refine_query_for_retry(search_query, model_name)
             if refined_query:
-                retry_raw = search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr)
+                retry_raw = search_client.search(
+                    refined_query, top_k=effective_top_k, filter_expr=filter_expr,
+                    vector_search_mode=vector_search_mode, search_strategy=search_strategy,
+                )
                 if retry_raw:
                     retry_score = max(
                         (d.get("reranker_score") or d.get("score", 0)) for d in retry_raw
@@ -730,6 +747,8 @@ async def invoke_agent_stream(
     system_prompt: str = None,
     model_name: str = None,
     filter_expr: str = None,
+    vector_search_mode: str = "hnsw",
+    search_strategy: str = "hybrid",
 ):
     """Streaming version of invoke_agent — yields token strings as they arrive.
 
@@ -758,10 +777,16 @@ async def invoke_agent_stream(
     sttm_hops = _detect_sttm_hops(query) if is_sttm else []
     if sttm_hops:
         logger.info(f"[Agent] STTM hop-by-hop mode: {len(sttm_hops)} hops detected")
-        raw_documents = _sttm_hop_search(search_client, search_query, sttm_hops)
+        raw_documents = _sttm_hop_search(
+            search_client, search_query, sttm_hops,
+            vector_search_mode=vector_search_mode, search_strategy=search_strategy,
+        )
         documents = raw_documents
     else:
-        raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
+        raw_documents = search_client.search(
+            search_query, top_k=effective_top_k, filter_expr=filter_expr,
+            vector_search_mode=vector_search_mode, search_strategy=search_strategy,
+        )
         documents = raw_documents
 
     if not documents:
@@ -798,7 +823,10 @@ async def invoke_agent_stream(
 
             refined_query = await _refine_query_for_retry(search_query, model_name)
             if refined_query:
-                retry_raw = search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr)
+                retry_raw = search_client.search(
+                    refined_query, top_k=effective_top_k, filter_expr=filter_expr,
+                    vector_search_mode=vector_search_mode, search_strategy=search_strategy,
+                )
                 if retry_raw:
                     retry_score = max(
                         (d.get("reranker_score") or d.get("score", 0)) for d in retry_raw

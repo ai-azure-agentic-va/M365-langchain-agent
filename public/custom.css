@@ -8,13 +8,17 @@
     display: none !important;
 }
 
-[data-radix-popper-content-wrapper],
-button[aria-haspopup="menu"],
+header button[aria-haspopup="menu"],
 header button:last-child,
 header > div > div:last-child > button,
 #header-user-button,
 .cl-user-button {
     display: none !important;
+}
+
+/* Ensure Select dropdown popups render above the settings modal */
+[data-radix-popper-content-wrapper] {
+    z-index: 9999 !important;
 }
 
 #sso-logout-button {

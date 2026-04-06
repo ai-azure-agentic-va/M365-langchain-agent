@@ -62,18 +62,22 @@ class AzureSearchClient:
         self.semantic_config = os.environ.get("AZURE_SEARCH_SEMANTIC_CONFIG_NAME", "")
         self.vector_field = os.environ.get("AZURE_SEARCH_EMBEDDING_FIELD", "content_vector")
 
-    def search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
-        """Hybrid search: keyword + vector + semantic ranking.
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        filter_expr: str = None,
+        vector_search_mode: str = "hnsw",
+        search_strategy: str = "hybrid",
+    ) -> List[Dict]:
+        """Search with configurable vector mode and strategy.
 
         Args:
             query: The search query text.
             top_k: Number of results to return.
             filter_expr: Optional OData filter expression for metadata filtering.
-                Examples:
-                    "file_name eq 'policy.pdf'"
-                    "source_type eq 'wiki'"
-                    "document_title eq 'Refund Policy'"
-                    "pii_redacted eq true"
+            vector_search_mode: "hnsw" (approximate, fast) or "exhaustive_knn" (exact, slower).
+            search_strategy: "hybrid" (keyword+vector), "vector" (vector only), or "keyword" (keyword only).
         """
         if not query or not query.strip():
             return []
@@ -83,21 +87,30 @@ class AzureSearchClient:
         # that would otherwise be invisible at position > top_k.
         retrieval_k = max(top_k * 3, 15) if self.semantic_config else top_k
 
-        query_vector = self.embeddings.embed_query(query)
-
-        vector_query = VectorizedQuery(
-            vector=query_vector,
-            k=retrieval_k,
-            fields=self.vector_field,
-        )
+        use_vector = search_strategy in ("hybrid", "vector")
+        use_keyword = search_strategy in ("hybrid", "keyword")
 
         search_kwargs = dict(
-            search_text=query,
-            vector_queries=[vector_query],
             top=retrieval_k,
-            query_type="semantic" if self.semantic_config else "simple",
-            semantic_configuration_name=self.semantic_config or None,
+            query_type="semantic" if self.semantic_config and use_keyword else "simple",
+            semantic_configuration_name=(self.semantic_config or None) if use_keyword else None,
         )
+
+        if use_keyword:
+            search_kwargs["search_text"] = query
+        else:
+            search_kwargs["search_text"] = "*"
+
+        if use_vector:
+            query_vector = self.embeddings.embed_query(query)
+            vector_query = VectorizedQuery(
+                vector=query_vector,
+                k=retrieval_k,
+                fields=self.vector_field,
+                exhaustive=(vector_search_mode == "exhaustive_knn"),
+            )
+            search_kwargs["vector_queries"] = [vector_query]
+
         if filter_expr:
             search_kwargs["filter"] = filter_expr
             logger.info(f"[Search] Applying filter: {filter_expr}")
@@ -124,6 +137,7 @@ class AzureSearchClient:
 
         logger.info(
             f"[Search] query='{query[:80]}...' hits={len(docs)} (retrieved={retrieval_k}, returned={top_k}) "
+            f"vector_mode={vector_search_mode}, strategy={search_strategy}, "
             f"index={os.environ.get('AZURE_SEARCH_INDEX_NAME')}"
         )
         return docs
