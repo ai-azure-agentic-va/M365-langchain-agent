@@ -442,16 +442,21 @@ async def on_message(message: cl.Message):
         msg.content += answer
         await msg.update()
 
+    # Deduplicate sources by base file name — show each document only once
     source_lines = []
+    seen_names = set()
     for s in sources:
-        title = s.get("title", "Untitled")
+        name = s.get("file_name") or s.get("title", "Untitled")
+        if name in seen_names:
+            continue
+        seen_names.add(name)
         url = s.get("url", "")
         idx = s.get("index", 0)
         if url:
             safe_url = quote(url, safe="/:@?&#=")
-            source_lines.append(f"[{idx}] [{title}]({safe_url})")
+            source_lines.append(f"[{idx}] [{name}]({safe_url})")
         else:
-            source_lines.append(f"[{idx}] {title}")
+            source_lines.append(f"[{idx}] {name}")
 
     answer_lower = answer.lower()
     has_citation_section = "citations:" in answer_lower or "sources:" in answer_lower or "cited sources:" in answer_lower
