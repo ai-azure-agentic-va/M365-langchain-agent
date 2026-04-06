@@ -20,3 +20,15 @@ docs/SSO_IMPLEMENTATION_JOURNEY.md
 
 # SSO Scripts (contains secrets)
 scripts/setup-sso-env.sh
+
+# Log files
+*.log
+
+# Claude Code memory/settings
+.claude/
+
+# Key Vault documentation (local only)
+KEYVAULT_SETUP_GUIDE.md
+docs/KEY_VAULT_INTEGRATION.md
+architecture.md
+key_vault_integration.md
