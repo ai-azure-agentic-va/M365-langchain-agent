@@ -919,29 +919,25 @@ def _filter_cited_sources(answer: str, sources: List[Source]) -> List[Source]:
 
 
 def format_sources_markdown(sources: List[Source]) -> str:
-    """Format sources as markdown with clickable links — used by bot.py and as fallback."""
+    """Format sources as markdown with clickable links — deduplicated by file name."""
     if not sources:
         return ""
 
     lines = []
+    seen_names = set()
     for s in sources:
-        title = s.get("title", "Untitled")
+        name = s.get("file_name") or s.get("title", "Untitled")
+        if name in seen_names:
+            continue
+        seen_names.add(name)
         url = s.get("url", "")
-        page = s.get("page_number", 0)
-        score = s.get("reranker_score") or s.get("score", 0)
 
         if url:
             safe_url = quote(url, safe="/:@?&#=")
-            link = f"[{title}]({safe_url})"
+            link = f"[{name}]({safe_url})"
         else:
-            link = f"**{title}**"
+            link = f"**{name}**"
 
-        parts = [f"[{s['index']}] {link}"]
-        if page and page > 0:
-            parts.append(f"p.{page}")
-        if score and score > 0:
-            parts.append(f"relevance: {score:.2f}")
-
-        lines.append(" — ".join(parts))
+        lines.append(f"[{s['index']}] {link}")
 
     return "\n".join(lines)
