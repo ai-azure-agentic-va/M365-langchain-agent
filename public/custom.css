@@ -1,16 +1,13 @@
-/* Hide the Logout menu item */
 [role="menuitem"]:has(svg.lucide-log-out),
 [role="menuitem"]:has(svg > path[d*="m16 17 5-5"]),
 [data-radix-collection-item]:last-child {
     display: none !important;
 }
 
-/* Remove "LLMs can make mistakes..." watermark */
 .watermark {
     display: none !important;
 }
 
-/* Hide the user avatar/menu button in top-right header. */
 [data-radix-popper-content-wrapper],
 button[aria-haspopup="menu"],
 header button:last-child,
@@ -20,7 +17,45 @@ header > div > div:last-child > button,
     display: none !important;
 }
 
-/* Hide the theme toggle (sun/moon icon) in top-right. */
+#sso-logout-button {
+    position: fixed;
+    top: 14px;
+    right: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 84px;
+    height: 36px;
+    padding: 0 14px;
+    border: 1px solid #d0d5dd;
+    border-radius: 10px;
+    background: #ffffff;
+    color: #344054;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1;
+    text-decoration: none;
+    box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+    z-index: 1000;
+}
+
+#sso-logout-button:hover {
+    border-color: #98a2b3;
+    background: #f8fafc;
+    color: #1570ef;
+}
+
+@media (max-width: 768px) {
+    #sso-logout-button {
+        top: 10px;
+        right: 12px;
+        min-width: 76px;
+        height: 34px;
+        padding: 0 12px;
+        font-size: 13px;
+    }
+}
+
 button:has(svg.lucide-sun),
 button:has(svg.lucide-moon),
 button:has(svg.lucide-sun-moon),
@@ -33,12 +68,6 @@ button[aria-label*="light" i],
     display: none !important;
 }
 
-/* =============================================
-   Hide feedback / like / dislike controls
-   Keep copy control visible.
-   ============================================= */
-
-/* Target by SVG path data (thumbs up & thumbs down icons) */
 button:has(svg path[d*="M7 10v12"]),
 button:has(svg path[d*="M17 14V2"]),
 button:has(svg path[d*="M14 9V5"]),
@@ -47,7 +76,6 @@ button:has(svg path[d*="M17 2v10"]) {
     display: none !important;
 }
 
-/* Target by aria-label patterns */
 button[aria-label*="like" i],
 button[aria-label*="dislike" i],
 button[aria-label*="feedback" i],
@@ -59,7 +87,6 @@ button[aria-label*="negative" i] {
     display: none !important;
 }
 
-/* Target the entire feedback/action wrappers that are explicitly named feedback. */
 [class*="feedback"],
 [class*="Feedback"],
 [data-testid*="feedback"],
@@ -67,7 +94,6 @@ button[aria-label*="negative" i] {
     display: none !important;
 }
 
-/* Hide all message action toolbar buttons globally (copy/feedback/etc.). */
 .step .buttons button,
 [class*="message-actions"] button,
 [class*="MessageActions"] button,
@@ -75,55 +101,198 @@ button[aria-label*="negative" i] {
     display: none !important;
 }
 
-/* ===== Starter Prompt Cards ===== */
-.cl-starter-prompts-container {
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    margin: 6px 0 8px;
+#welcome-screen {
+    overflow: visible !important;
 }
 
-.cl-starter-prompt-card {
-    width: 100%;
-    min-height: 0;
-    padding: 10px 14px;
-    border: 1px solid #d0d5dd !important;
-    border-radius: 12px !important;
-    background: #f8fafc !important;
+#starters,
+#starters.starter-cards-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 12px !important;
+    width: 100% !important;
+    max-width: 700px !important;
+    justify-content: stretch !important;
+    flex-wrap: unset !important;
+    padding: 4px 0 !important;
+    position: relative !important;
+    z-index: 10 !important;
+}
+
+#starters button[id^="starter-"],
+#starters .starter-card {
+    display: flex !important;
+    align-items: flex-start !important;
+    gap: 12px !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: auto !important;
+    min-height: 80px !important;
+    padding: 16px 18px !important;
+    border: 1px solid #e4e7ec !important;
+    border-radius: 16px !important;
+    background: #ffffff !important;
+    overflow: visible !important;
+    box-sizing: border-box !important;
     color: #344054 !important;
     text-align: left !important;
-    font-size: 13px !important;
+    font-family: inherit !important;
+    font-size: 14px !important;
     font-weight: 500 !important;
-    line-height: 1.35 !important;
-    cursor: pointer !important;
+    line-height: 1.45 !important;
     white-space: normal !important;
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: flex-start !important;
-    gap: 10px !important;
-    box-shadow: none;
-    transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+    word-break: break-word !important;
+    text-overflow: unset !important;
+    cursor: pointer !important;
+    pointer-events: auto !important;
+    opacity: 1 !important;
+    box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04) !important;
+    transition: border-color 0.2s ease, background-color 0.2s ease,
+                box-shadow 0.2s ease, transform 0.15s ease !important;
 }
 
-.cl-starter-prompt-card:hover {
-    border-color: #98a2b3 !important;
-    background: #eff8ff !important;
-    color: #1570ef !important;
+#starters button[id^="starter-"]:hover,
+#starters .starter-card:hover {
+    border-color: #84caff !important;
+    background: #f0f7ff !important;
+    box-shadow: 0 4px 12px rgba(21, 112, 239, 0.12), 0 1px 3px rgba(21, 112, 239, 0.08) !important;
+    transform: translateY(-1px);
 }
 
-.cl-starter-prompt-card:focus-visible {
+#starters button[id^="starter-"]:active,
+#starters .starter-card:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06) !important;
+}
+
+#starters button[id^="starter-"]:focus-visible,
+#starters .starter-card:focus-visible {
     outline: 2px solid #1570ef !important;
     outline-offset: 2px !important;
 }
 
+#starters button[id^="starter-"] p {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    font-size: 13.5px !important;
+    line-height: 1.45 !important;
+    color: #344054 !important;
+    max-width: 100% !important;
+}
+
+#starters button[id^="starter-"]:hover p {
+    color: #1570ef !important;
+}
+
+#starters button[id^="starter-"] > div {
+    white-space: normal !important;
+    overflow: visible !important;
+    flex-wrap: wrap !important;
+    max-width: 100% !important;
+}
+
+.starter-card-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    overflow: visible;
+}
+
+.starter-card-title {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.3;
+    color: #1d2939;
+    white-space: normal;
+    word-break: break-word;
+}
+
+.starter-card-desc {
+    font-size: 12.5px;
+    font-weight: 400;
+    line-height: 1.4;
+    color: #667085;
+    white-space: normal;
+    word-break: break-word;
+}
+
+.starter-card-text {
+    font-size: 13.5px;
+    line-height: 1.45;
+    color: #344054;
+    white-space: normal;
+    word-break: break-word;
+}
+
+#starters button[id^="starter-"]:hover .starter-card-title,
+#starters button[id^="starter-"]:hover .starter-card-text {
+    color: #1570ef;
+}
+
+#starters button[id^="starter-"]:hover .starter-card-desc {
+    color: #528bff;
+}
+
 @media (max-width: 768px) {
-    .cl-starter-prompt-card {
-        padding: 12px 16px;
+    #starters,
+    #starters.starter-cards-grid {
+        grid-template-columns: 1fr !important;
+    }
+    #starters button[id^="starter-"],
+    #starters .starter-card {
+        min-height: 64px !important;
+        padding: 14px 16px !important;
     }
 }
 
-/* --- Debug Accordion Styles --- */
+.thinking-accordion {
+    border: none;
+    margin: 0 0 4px;
+    background: transparent;
+}
+
+.thinking-summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 13px;
+    color: #667085;
+    list-style: none;
+    padding: 2px 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    user-select: none;
+}
+
+.thinking-summary::before {
+    content: "▶";
+    font-size: 9px;
+    transition: transform 0.2s ease;
+    display: inline-block;
+}
+
+.thinking-accordion[open] > .thinking-summary::before {
+    transform: rotate(90deg);
+}
+
+.thinking-summary::-webkit-details-marker {
+    display: none;
+}
+
+.thinking-body {
+    padding: 4px 0 4px 18px;
+    font-size: 13px;
+    color: #667085;
+    line-height: 1.6;
+}
+
+.thinking-error {
+    color: #d92d20;
+}
+
 .debug-accordion {
     border: none;
     border-radius: 0;
@@ -160,7 +329,6 @@ button[aria-label*="negative" i] {
     color: #1d2939;
 }
 
-/* Custom arrow indicator */
 .debug-accordion-summary::before {
     content: "▶";
     font-size: 10px;
@@ -172,7 +340,6 @@ button[aria-label*="negative" i] {
     transform: rotate(90deg);
 }
 
-/* Remove default browser arrow */
 .debug-accordion-summary::-webkit-details-marker {
     display: none;
 }
@@ -221,8 +388,6 @@ button[aria-label*="negative" i] {
     word-break: break-word;
 }
 
-/* ===== Suggested Follow-Up Prompt Chips ===== */
-
 .suggestion-chips-container {
     display: flex;
     flex-direction: column;
@@ -267,34 +432,6 @@ button[aria-label*="negative" i] {
     color: #1570ef;
 }
 
-.suggestion-chip-copy {
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border: 1px solid #e4e7ec;
-    border-radius: 6px;
-    background: #ffffff;
-    color: #667085;
-    cursor: pointer;
-    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-
-.suggestion-chip-copy:hover {
-    background: #f2f4f7;
-    color: #344054;
-    border-color: #d0d5dd;
-}
-
-.suggestion-chip-copy.copied {
-    color: #12b76a;
-    border-color: #12b76a;
-}
-
-/* Hide all message-level action buttons for Explore Further blocks. */
 .suggestion-step .buttons button,
 .suggestion-step [class*="message-actions"] button,
 .suggestion-step [class*="MessageActions"] button,
@@ -302,7 +439,6 @@ button[aria-label*="negative" i] {
     display: none !important;
 }
 
-/* Remove copy actions globally (they copy raw HTML for custom chips). */
 button[aria-label*="copy" i],
 button[title*="copy" i],
 button[aria-label*="clipboard" i],
@@ -312,46 +448,12 @@ button[title*="clipboard" i],
     display: none !important;
 }
 
-/* Mobile: stack chips full-width */
 @media (max-width: 768px) {
     .suggestion-chip {
         padding: 12px 16px;
     }
 }
 
-/* Dedicated starter tray below the composer, Copilot-style. */
-#starter-prompts-fixed-tray {
-    display: none;
-}
-
-.starter-prompts-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
-    width: 100%;
-}
-
-.starter-prompts-grid .starter-chip {
-    min-height: 84px;
-    align-items: flex-start;
-    justify-content: flex-start;
-    padding: 14px 16px;
-    background: #ffffff;
-    box-shadow: 0 4px 12px rgba(16, 24, 40, 0.08);
-}
-
-.starter-prompts-grid .starter-chip-text {
-    white-space: normal;
-    line-height: 1.4;
-}
-
-@media (max-width: 1024px) {
-    .starter-prompts-grid {
-        grid-template-columns: 1fr;
-    }
-}
-
-/* Make the assistant logo fill the avatar slot more cleanly. */
 img[alt^="Avatar for"] {
     width: 100% !important;
     height: 100% !important;

@@ -45,9 +45,6 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return val.strip().lower() in {"1", "true", "yes", "on"}
 
 
-# ---------------------------------------------------------------------------
-# Managed Identity credentials for UserAssignedMSI bots
-# ---------------------------------------------------------------------------
 class MsiAppCredentials(AppCredentials):
     """Bot credentials that use Azure Managed Identity instead of client secret.
 
@@ -99,9 +96,6 @@ class MsiBotFrameworkAdapter(BotFrameworkAdapter):
         return credentials
 
 
-# ---------------------------------------------------------------------------
-# Bot Framework Adapter
-# ---------------------------------------------------------------------------
 _app_id = os.environ.get("BOT_APP_ID", "")
 _app_password = os.environ.get("BOT_APP_PASSWORD", "")
 _auth_tenant = os.environ.get("BOT_AUTH_TENANT", None)
@@ -112,7 +106,6 @@ settings = BotFrameworkAdapterSettings(
     channel_auth_tenant=_auth_tenant,
 )
 
-# Use MSI adapter when app_id is set but no password (UserAssignedMSI mode)
 if _app_id and not _app_password:
     logger.info("[App] UserAssignedMSI mode — using MsiBotFrameworkAdapter")
     adapter = MsiBotFrameworkAdapter(settings)
@@ -121,7 +114,6 @@ else:
     adapter = BotFrameworkAdapter(settings)
 
 
-# Error handler — log and attempt to notify user (best-effort)
 async def on_error(context, error):
     logger.error(f"[Adapter] Unhandled error: {error}", exc_info=True)
     try:
@@ -132,12 +124,8 @@ async def on_error(context, error):
 
 adapter.on_turn_error = on_error
 
-# Bot instance
 bot = DocAgentBot()
 
-# ---------------------------------------------------------------------------
-# FastAPI App
-# ---------------------------------------------------------------------------
 app = FastAPI(
     title="M365 LangChain Agent",
     description="RAG agent with Bot Framework + CosmosDB",
@@ -152,7 +140,6 @@ async def messages(request: Request) -> Response:
     Azure Bot Service sends Activity JSON here. The adapter validates
     the auth header, deserializes the Activity, and routes to our bot.
     """
-    # Log every incoming request for debugging
     content_type = request.headers.get("Content-Type", "")
     auth_present = "Yes" if request.headers.get("Authorization") else "No"
     logger.info(f"[App] POST /api/messages — Content-Type={content_type}, Auth={auth_present}, Client={request.client.host}")
@@ -219,8 +206,13 @@ async def starter_prompts():
     except json.JSONDecodeError:
         logger.warning("[App] STARTER_PROMPTS is not valid JSON")
         return {"prompts": []}
-    prompts = [item.get("message", "").strip() for item in items if isinstance(item, dict)]
-    prompts = [p for p in prompts if p]
+    prompts = []
+    for item in items:
+        if isinstance(item, dict) and item.get("message", "").strip():
+            prompts.append({
+                "label": item.get("label", item["message"]).strip(),
+                "message": item["message"].strip(),
+            })
     return {"prompts": prompts}
 
 
@@ -307,10 +299,6 @@ async def root():
     }
 
 
-# ---------------------------------------------------------------------------
-# SSO / Authentication (Chainlit UI only)
-# ---------------------------------------------------------------------------
-
 @app.get("/chat/auth/login")
 async def auth_login_chat(request: Request):
     """Initiate Entra ID SSO login flow."""
@@ -374,6 +362,28 @@ async def auth_error(request: Request):
     )
 
 
+@app.get("/chat/auth/signed-out")
+async def auth_signed_out():
+    """Signed-out landing page with explicit re-login action."""
+    return Response(
+        content=(
+            "<html><body style='font-family: Inter, Arial, sans-serif; padding: 32px;'>"
+            "<h1>Signed out</h1>"
+            "<p>You have been signed out of the application and the Entra SSO session.</p>"
+            "<script>"
+            "try { localStorage.clear(); } catch (e) {}"
+            "try { sessionStorage.clear(); } catch (e) {}"
+            "</script>"
+            "<p><a href='/chat/auth/login?prompt=login' "
+            "style='display:inline-block;padding:10px 16px;border:1px solid #d0d5dd;"
+            "border-radius:10px;text-decoration:none;color:#344054;font-weight:600;'>"
+            "Sign in again</a></p>"
+            "</body></html>"
+        ),
+        media_type="text/html",
+    )
+
+
 # ---------------------------------------------------------------------------
 # SSO Middleware (protects /chat/ routes in Chainlit UI mode)
 # ---------------------------------------------------------------------------
@@ -387,16 +397,14 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
       header_auth_callback will fall back to default-user.
     """
 
-    # Paths that are internal Chainlit plumbing — never redirect these
     _PASSTHROUGH_PREFIXES = (
-        "/chat/ws/",          # WebSocket / Socket.IO
-        "/chat/project/",     # Chainlit project config (translations, etc.)
-        "/chat/public/",      # Static assets (CSS, JS, images)
-        "/chat/favicon",      # Favicon
-        "/chat/files/",       # Uploaded files
-        "/chat/auth/",        # SSO auth routes (login, callback, logout, error)
+        "/chat/ws/",
+        "/chat/project/",
+        "/chat/public/",
+        "/chat/favicon",
+        "/chat/files/",
+        "/chat/auth/",
     )
-    # Exact paths that are internal Chainlit API
     _PASSTHROUGH_EXACT = {
         "/chat/user",
     }
@@ -404,24 +412,22 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
-        # Only act on /chat/ routes
         if path.startswith("/chat"):
             from m365_langchain_agent.auth import (
                 get_user_from_request, create_session_cookie,
                 SESSION_COOKIE_NAME, SESSION_IDLE_TIMEOUT, SESSION_COOKIE_SECURE,
+                SIGNED_OUT_COOKIE_NAME,
             )
 
             user = get_user_from_request(request)
 
             if user:
-                # Authenticated — inject user identity as custom headers for Chainlit
                 request.state.user = user
                 request.scope["headers"].append((b"x-user-oid", user["oid"].encode()))
                 request.scope["headers"].append((b"x-user-name", user["name"].encode()))
                 request.scope["headers"].append((b"x-user-email", (user.get("email") or "").encode()))
                 request.scope["headers"].append((b"x-user-role", user["role"].encode()))
 
-                # Re-issue cookie to reset idle timeout clock
                 response = await call_next(request)
                 cookie_data = {k: v for k, v in user.items() if k != "role"}
                 response.set_cookie(
@@ -434,14 +440,15 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
                 )
                 return response
             else:
-                # Not authenticated — only redirect browser page navigations,
-                # never redirect WebSocket, Socket.IO, or Chainlit API requests
                 is_passthrough = (
                     path.startswith(self._PASSTHROUGH_PREFIXES)
                     or path in self._PASSTHROUGH_EXACT
                 )
                 if not is_passthrough:
-                    return RedirectResponse(url="/chat/auth/login?next=/chat/")
+                    login_url = "/chat/auth/login?next=/chat/"
+                    if request.cookies.get(SIGNED_OUT_COOKIE_NAME) == "1":
+                        login_url += "&prompt=login"
+                    return RedirectResponse(url=login_url)
 
         response = await call_next(request)
         return response
@@ -459,7 +466,6 @@ if __name__ == "__main__":
         logger.info(f"[App] Starting Chainlit UI on port {port}")
         from chainlit.utils import mount_chainlit
 
-        # Add SSO middleware to protect /chat/ routes
         enable_sso = os.environ.get("ENABLE_SSO", "true").lower().strip() == "true"
         if enable_sso:
             logger.info("[App] SSO enabled — adding authentication middleware")
@@ -472,7 +478,6 @@ if __name__ == "__main__":
         )
         mount_chainlit(app=app, target=chainlit_target, path="/chat")
 
-        # Replace root route with redirect to Chainlit UI
         app.routes[:] = [r for r in app.routes if not (hasattr(r, "path") and r.path == "/")]
 
         @app.get("/", include_in_schema=False)

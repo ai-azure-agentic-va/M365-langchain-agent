@@ -10,6 +10,7 @@ Returns structured results: answer text + list of source documents with full met
 import logging
 import os
 import re
+from collections import Counter
 from typing import List, Dict, Optional, TypedDict
 from urllib.parse import quote
 
@@ -25,7 +26,6 @@ from m365_langchain_agent.utils.search import get_search_client
 
 logger = logging.getLogger(__name__)
 
-# Shared credential + token provider for Azure OpenAI (Managed Identity)
 _credential = DefaultAzureCredential()
 _token_provider = get_bearer_token_provider(_credential, "https://cognitiveservices.azure.com/.default")
 
@@ -61,23 +61,20 @@ Citation rules:
 - Never invent citations — only cite documents that are actually provided.
 
 When the knowledge base does not contain relevant information:
-- Say "The knowledge base does not contain enough information to answer that."
+- Say "This question appears to be outside the scope of the knowledge base. I can only answer based on available documentation."
 - Do NOT make up an answer or hallucinate information.
 - Do NOT say "the provided documents" — the user is not providing documents, the system is searching a knowledge base.
 
-Disambiguation rules:
-- If the retrieved documents come from MULTIPLE distinct source files and the question does not specify which one, DO NOT blend answers from all of them.
-- Instead, ask the user to clarify which document they are interested in.
-- List the available documents by name so the user can pick.
-- Example: "I found information in several documents: **[1] payments_sttm_workbook.xlsx**, **[2] logistics_sttm_workbook.xlsx**, and **[3] customer_sttm_workbook.xlsx**. Which one would you like me to answer from?"
-- If the question clearly targets a specific topic or document (e.g. "payments STTM"), answer directly from the matching document without asking.
-- If there is only one source document, answer directly.
+Multiple-source rules:
+- When documents come from multiple source files, SYNTHESIZE a single answer using all relevant sources. Cite each source with its number.
+- Only ask the user to clarify if the sources contain CONFLICTING information on the same topic and you cannot determine which is correct.
+- Example of when to ask: Document [1] says the retention period is 30 days, but document [2] says 90 days — ask which policy applies.
+- Example of when NOT to ask: Documents [1] and [2] both discuss refund policies from different angles — synthesize both into one answer.
+- Never ask "which document?" simply because multiple documents were retrieved. The user expects a complete answer.
 
 Greeting rules:
 - If the user greeting is generic (for example, "hi", "hello", or "hey") and no specific information is being requested, do not use the retrieved documents. Instead respond with: "Hello! I'm the ETS Virtual Assistant. How can I help you today?"
 - If the greeting includes a question (e.g. "Hi, what is the refund policy?"), answer the question normally using the documents.
-
-When listing documents for disambiguation, note that additional relevant documents may exist beyond what was retrieved. Encourage the user to ask about a specific document by name if they don't see the one they need.
 
 Do not summarize or recap information you have already presented in the same answer.
 
@@ -145,6 +142,103 @@ def _is_sttm_query(query: str) -> bool:
     return any(kw in q for kw in _STTM_KEYWORDS)
 
 
+_STTM_HOPS = [
+    ("landing", "raw"),
+    ("raw", "int"),
+    ("int", "cur"),
+    ("cur", "asl"),
+]
+
+_STTM_MULTIHOP_SIGNALS = frozenset({
+    "end to end", "end-to-end", "all layers", "all hops", "through all",
+    "across layers", "across hops", "full lineage", "complete lineage",
+    "landing to asl", "raw to asl", "raw to cur", "landing to cur",
+    "source to asl", "from source to target",
+})
+
+
+def _detect_sttm_hops(query: str) -> list[tuple[str, str]]:
+    """Determine which STTM hops a query targets.
+
+    Returns a list of (from_layer, to_layer) tuples.  An empty list means
+    the query is STTM-related but not hop-specific — fall back to the
+    normal broad search.
+    """
+    q = query.lower()
+
+    explicit: list[tuple[str, str]] = []
+    for src, tgt in _STTM_HOPS:
+        patterns = [
+            f"{src} to {tgt}",
+            f"{src}-to-{tgt}",
+            f"{src} → {tgt}",
+            f"{src}->{tgt}",
+            f"{src}→{tgt}",
+        ]
+        if any(p in q for p in patterns):
+            explicit.append((src, tgt))
+
+    if explicit:
+        return explicit
+
+    if any(signal in q for signal in _STTM_MULTIHOP_SIGNALS):
+        return list(_STTM_HOPS)
+
+    return []
+
+
+def _sttm_hop_search(
+    search_client,
+    base_query: str,
+    hops: list[tuple[str, str]],
+    top_k_per_hop: int = 8,
+) -> list[dict]:
+    """Run targeted searches for each STTM hop and merge results.
+
+    Each hop search appends layer terms to the base query so the embedding
+    and keyword components both target that specific transition.  Results
+    are merged and deduplicated while preserving chunk diversity across hops
+    (relaxed dedup: keeps multiple chunks per source document).
+
+    Args:
+        search_client: The AzureSearchClient singleton.
+        base_query: The user's search query (possibly rewritten).
+        hops: List of (from_layer, to_layer) tuples to search.
+        top_k_per_hop: Chunks to retrieve per hop search.
+
+    Returns:
+        Merged, deduplicated list of document dicts.
+    """
+    all_chunks: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for src, tgt in hops:
+        hop_query = f"{base_query} {src} to {tgt}"
+        try:
+            results = search_client.search(hop_query, top_k=top_k_per_hop)
+            new_count = 0
+            for doc in results:
+                doc_id = doc.get("content", "")[:200]
+                if doc_id not in seen_ids:
+                    seen_ids.add(doc_id)
+                    all_chunks.append(doc)
+                    new_count += 1
+            logger.info(
+                f"[Agent] STTM hop search {src}→{tgt}: "
+                f"{len(results)} retrieved, {new_count} new after dedup"
+            )
+        except Exception as e:
+            logger.warning(f"[Agent] STTM hop search {src}→{tgt} failed: {e}")
+
+    all_chunks.sort(
+        key=lambda d: (d.get("reranker_score") or 0, d.get("score", 0)),
+        reverse=True,
+    )
+
+    logger.info(f"[Agent] STTM hop search complete: {len(all_chunks)} total chunks from {len(hops)} hops")
+    return all_chunks
+
+
 def get_available_models() -> list:
     """Return list of available model deployment names from env or defaults."""
     models_str = os.environ.get("AZURE_OPENAI_AVAILABLE_MODELS", "")
@@ -158,9 +252,17 @@ def get_available_models() -> list:
     return defaults
 
 
-DEFAULT_TOP_K = int(os.environ.get("DEFAULT_TOP_K", "10"))
+DEFAULT_TOP_K = int(os.environ.get("DEFAULT_TOP_K", "5"))
 DEFAULT_TEMPERATURE = float(os.environ.get("DEFAULT_TEMPERATURE", "0.2"))
 DEFAULT_MODEL = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
+
+RETRIEVAL_SCORE_THRESHOLD = float(os.environ.get("RETRIEVAL_SCORE_THRESHOLD", "1.2"))
+
+_OUT_OF_SCOPE_ANSWER = (
+    "This question appears to be outside the scope of the knowledge base. "
+    "I can only answer based on available documentation. "
+    "Try rephrasing your question or asking about a specific topic covered in the knowledge base."
+)
 
 
 def _is_reasoning_model(deployment: str) -> bool:
@@ -171,7 +273,6 @@ def _is_reasoning_model(deployment: str) -> bool:
 def _build_llm(temperature: float = None, model_name: str = None) -> AzureChatOpenAI:
     """Create the Azure OpenAI LLM client with configurable parameters."""
     deployment = model_name or DEFAULT_MODEL
-    # Reasoning models (o1, o3) require a newer API version and don't support temperature
     api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
     is_reasoning = _is_reasoning_model(deployment)
     if is_reasoning:
@@ -188,12 +289,49 @@ def _build_llm(temperature: float = None, model_name: str = None) -> AzureChatOp
 
 
 
-SHAREPOINT_BASE_URL = os.environ.get("SHAREPOINT_BASE_URL", "")
-WIKI_BASE_URL = os.environ.get("WIKI_BASE_URL", "")
+def _extract_section_label(content: str) -> Optional[str]:
+    """Extract a meaningful section/sheet label from chunk content.
+
+    Priority:
+      1. Excel sheet name  — "Sheet: <name>", "Worksheet: <name>", "Tab: <name>"
+      2. Markdown heading   — first # or ## heading in the content
+      3. None               — no meaningful label found; caller uses base filename
+    """
+    # Excel sheet patterns (case-insensitive, anywhere in first 500 chars)
+    head = content[:500]
+    sheet_match = re.search(
+        r"(?:Sheet|Worksheet|Tab)\s*:\s*(.+?)(?:\n|$)", head, re.IGNORECASE
+    )
+    if sheet_match:
+        name = sheet_match.group(1).strip()
+        if name:
+            return f"Sheet: {name}"
+
+    # Markdown heading (first # or ## line)
+    heading_match = re.search(r"^#{1,2}\s+(.+)", content, re.MULTILINE)
+    if heading_match:
+        heading = heading_match.group(1).strip()
+        if heading:
+            return f"Section: {heading}"
+
+    return None
 
 
 def _build_sources(documents: List[Dict]) -> List[Source]:
-    """Convert raw search results into Source dicts with preview text."""
+    """Convert raw search results into Source dicts with preview text.
+
+    When multiple chunks share the same base title (e.g. same Excel file but
+    different sheets), appends a human-friendly differentiator:
+      - Sheet name for Excel files
+      - Section heading for markdown/docs
+      - Base filename only as fallback (never Part X/Y or chunk indices)
+    """
+    # First pass: detect which base titles appear more than once
+    base_titles = []
+    for d in documents:
+        base_titles.append(d.get("document_title") or d.get("file_name") or "Untitled")
+    title_counts = Counter(base_titles)
+
     sources = []
     for i, d in enumerate(documents):
         content = d.get("content", "")
@@ -203,9 +341,18 @@ def _build_sources(documents: List[Dict]) -> List[Source]:
 
         raw_url = d.get("source_url", "")
         safe_url = quote(raw_url, safe="/:@?&#=") if raw_url else ""
+        base_title = base_titles[i]
+
+        # Build a unique display title for duplicates
+        title = base_title
+        if title_counts[base_title] > 1:
+            section_label = _extract_section_label(content)
+            if section_label:
+                title = f"{base_title} — {section_label}"
+
         sources.append(Source(
             index=i + 1,
-            title=d.get("document_title") or d.get("file_name") or "Untitled",
+            title=title,
             url=safe_url,
             source_type=d.get("source_type", ""),
             file_name=d.get("file_name", ""),
@@ -260,12 +407,10 @@ async def generate_suggested_prompts(
     ]
 
     try:
-        # Prefer mini model for cost (~$0.0003/call); fall back to caller's model
         suggestion_model = model_name or DEFAULT_MODEL
         llm = _build_llm(temperature=0.7, model_name=suggestion_model)
         response = await llm.ainvoke(messages)
         lines = [line.strip() for line in response.content.strip().split("\n") if line.strip()]
-        # Take exactly 3, strip any numbering artifacts
         suggestions = []
         for line in lines[:3]:
             # Remove leading "1.", "- ", "• " etc.
@@ -287,6 +432,42 @@ Rules:
 - Keep the rewritten query concise (under 30 words).
 - Return ONLY the rewritten query, nothing else."""
 
+QUERY_REFINE_PROMPT = """The following search query returned low-relevance results from a knowledge base. Rewrite it to improve retrieval. The knowledge base contains enterprise documents, data mappings, policies, and technical guides.
+
+Rules:
+- Broaden the query if it is too specific, or add synonyms / related terms.
+- If the query uses abbreviations, expand them.
+- Do NOT answer the question — only rewrite the search query.
+- Keep it concise (under 30 words).
+- Return ONLY the rewritten query, nothing else."""
+
+
+async def _refine_query_for_retry(
+    query: str,
+    model_name: str = None,
+) -> str | None:
+    """Refine a query that produced low-relevance results.
+
+    Returns a refined query string, or None if refinement fails or
+    produces the same query.
+    """
+    messages = [
+        SystemMessage(content=QUERY_REFINE_PROMPT),
+        HumanMessage(content=f"Original query: {query}\n\nRefined query:"),
+    ]
+    try:
+        llm = _build_llm(temperature=0.0, model_name=model_name)
+        response = await llm.ainvoke(messages)
+        refined = response.content.strip().strip('"')
+        if refined and refined.lower() != query.lower():
+            logger.info(f"[Agent] Query refinement: '{query}' → '{refined}'")
+            return refined
+        logger.info("[Agent] Query refinement produced same query — skipping retry")
+        return None
+    except Exception as e:
+        logger.warning(f"[Agent] Query refinement failed: {e}")
+        return None
+
 
 async def _rewrite_query_with_history(
     query: str,
@@ -303,11 +484,9 @@ async def _rewrite_query_with_history(
     if not conversation_history:
         return query
 
-    # Build a compact history summary (last 2 exchanges)
     history_lines = []
     for turn in conversation_history[-4:]:
         role = "User" if turn["role"] == "user" else "Assistant"
-        # Truncate long assistant responses to save tokens
         content = turn["content"][:300] if turn["role"] == "assistant" else turn["content"]
         history_lines.append(f"{role}: {content}")
 
@@ -353,7 +532,6 @@ def _format_context(documents: List[Dict], all_document_names: List[str] = None)
     if not documents:
         return "No documents found."
 
-    # Add disambiguation hint when results span multiple source files
     unique_sources = _get_unique_source_names(documents)
     hint = ""
     if len(unique_sources) > 1:
@@ -368,8 +546,8 @@ def _format_context(documents: List[Dict], all_document_names: List[str] = None)
             )
         hint = (
             f"NOTE: These documents come from multiple distinct sources: "
-            f"{source_list}.{extra} If the user's question is ambiguous about which source "
-            f"they mean, ask them to clarify before answering.\n\n"
+            f"{source_list}.{extra} Synthesize information from all relevant sources into "
+            f"a single answer. Only ask for clarification if sources directly contradict each other.\n\n"
         )
 
     parts = []
@@ -378,6 +556,28 @@ def _format_context(documents: List[Dict], all_document_names: List[str] = None)
         parts.append(f"[{i+1}] (Source: {title})\n{d['content']}")
 
     return hint + "\n\n".join(parts)
+
+
+def _log_retrieval_decision(
+    query: str,
+    original_score: float,
+    retry_triggered: bool,
+    refined_query: Optional[str],
+    retry_score: Optional[float],
+    decision: str,
+) -> None:
+    """Emit a single structured log line summarising the retrieval quality gate."""
+    logger.info(
+        "[Retrieval] query=%r original_score=%.3f retry=%s refined_query=%r "
+        "retry_score=%s decision=%s threshold=%.2f",
+        query[:80],
+        original_score,
+        retry_triggered,
+        (refined_query[:80] if refined_query else None),
+        f"{retry_score:.3f}" if retry_score is not None else "n/a",
+        decision,
+        RETRIEVAL_SCORE_THRESHOLD,
+    )
 
 
 async def invoke_agent(
@@ -406,25 +606,72 @@ async def invoke_agent(
     effective_top_k = top_k if top_k is not None else DEFAULT_TOP_K
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
-    # STTM routing — specialized prompt + higher top_k for data lineage queries
     is_sttm = _is_sttm_query(query)
     if is_sttm and not system_prompt:
         effective_prompt = STTM_SYSTEM_PROMPT
         effective_top_k = max(effective_top_k, STTM_TOP_K)
         logger.info(f"[Agent] STTM query detected — using STTM prompt, top_k={effective_top_k}")
 
-    # 0. Rewrite query using conversation context (for follow-up questions)
     search_query = query
     if conversation_history:
         search_query = await _rewrite_query_with_history(query, conversation_history, model_name)
 
-    # 1. Retrieve documents from Azure AI Search (using rewritten query)
     search_client = get_search_client()
-    raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
-    logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}, sttm={is_sttm}) for: {search_query[:100]}")
 
-    # 2. Document discovery — get full list of matching doc names via faceting
-    #     so the LLM can list ALL relevant docs, not just the retrieved subset
+    sttm_hops = _detect_sttm_hops(query) if is_sttm else []
+    if sttm_hops:
+        logger.info(f"[Agent] STTM hop-by-hop mode: {len(sttm_hops)} hops detected")
+        raw_documents = _sttm_hop_search(search_client, search_query, sttm_hops)
+        documents = raw_documents
+    else:
+        raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
+        logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}, sttm={is_sttm}) for: {search_query[:100]}")
+        documents = raw_documents
+
+    if not documents:
+        logger.info("[Agent] Quality gate: zero results — skipping LLM")
+        return AgentResult(
+            answer=_OUT_OF_SCOPE_ANSWER, sources=[], raw_chunks=[], full_prompt=""
+        )
+
+    if not sttm_hops:
+        original_score = max(
+            (d.get("reranker_score") or d.get("score", 0)) for d in documents
+        )
+        top_score = original_score
+        retry_triggered = False
+        refined_query = None
+        retry_score = None
+        decision = "passed"
+
+        if RETRIEVAL_SCORE_THRESHOLD > 0 and top_score < RETRIEVAL_SCORE_THRESHOLD:
+            retry_triggered = True
+            refined_query = await _refine_query_for_retry(search_query, model_name)
+            if refined_query:
+                retry_raw = search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr)
+                if retry_raw:
+                    retry_score = max(
+                        (d.get("reranker_score") or d.get("score", 0)) for d in retry_raw
+                    )
+                    if retry_score >= top_score:
+                        raw_documents = retry_raw
+                        documents = retry_raw
+                        search_query = refined_query
+                        top_score = retry_score
+                        decision = "improved_via_retry"
+                    else:
+                        decision = "retry_worse_fallback"
+
+            if top_score < RETRIEVAL_SCORE_THRESHOLD:
+                decision = "blocked"
+
+        _log_retrieval_decision(search_query, original_score, retry_triggered, refined_query, retry_score, decision)
+
+        if decision == "blocked":
+            return AgentResult(
+                answer=_OUT_OF_SCOPE_ANSWER, sources=[], raw_chunks=raw_documents, full_prompt=""
+            )
+
     all_doc_names = None
     unique_sources = _get_unique_source_names(raw_documents)
     if len(unique_sources) > 1:
@@ -435,16 +682,12 @@ async def invoke_agent(
                 f"(retrieved {len(unique_sources)})"
             )
 
-    # 3. Build context from ALL chunks (not deduped) — LLM needs full context
-    #    Sources for citation display use deduped list
     context = _format_context(raw_documents, all_document_names=all_doc_names)
     sources = _build_sources(raw_documents)
 
-    # 4. Build message history for the LLM
     messages = [SystemMessage(content=effective_prompt)]
-
     if conversation_history:
-        for turn in conversation_history[-6:]:  # Last 3 exchanges max
+        for turn in conversation_history[-6:]:
             if turn["role"] == "user":
                 messages.append(HumanMessage(content=turn["content"]))
             elif turn["role"] == "assistant":
@@ -457,16 +700,12 @@ Documents:
 
 Answer:"""
     messages.append(HumanMessage(content=user_prompt))
-
-    # Capture the full prompt for debug visibility
     full_prompt = f"=== SYSTEM PROMPT ===\n{effective_prompt}\n\n=== USER PROMPT (with context) ===\n{user_prompt}"
 
-    # 5. Generate answer
     llm = _build_llm(temperature=temperature, model_name=model_name)
     try:
         response = await llm.ainvoke(messages)
         answer = response.content
-        # Only return sources that the LLM actually cited in its answer
         cited_sources = _filter_cited_sources(answer, sources)
         logger.info(
             f"[Agent] Generated answer, length={len(answer)}, model={model_name or DEFAULT_MODEL}, "
@@ -500,7 +739,6 @@ async def invoke_agent_stream(
     effective_top_k = top_k if top_k is not None else DEFAULT_TOP_K
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
-    # STTM routing — specialized prompt + higher top_k for data lineage queries
     is_sttm = _is_sttm_query(query)
     if is_sttm and not system_prompt:
         effective_prompt = STTM_SYSTEM_PROMPT
@@ -509,19 +747,102 @@ async def invoke_agent_stream(
 
     search_query = query
     if conversation_history:
+        yield {"type": "event", "event": "rewriting_query"}
         search_query = await _rewrite_query_with_history(query, conversation_history, model_name)
+        yield {"type": "event", "event": "query_rewritten", "query": search_query}
+
+    yield {"type": "event", "event": "search_start"}
 
     search_client = get_search_client()
-    raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
-    logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}) for: {search_query[:100]}")
 
-    # Document discovery — full list of matching doc names via faceting
+    sttm_hops = _detect_sttm_hops(query) if is_sttm else []
+    if sttm_hops:
+        logger.info(f"[Agent] STTM hop-by-hop mode: {len(sttm_hops)} hops detected")
+        raw_documents = _sttm_hop_search(search_client, search_query, sttm_hops)
+        documents = raw_documents
+    else:
+        raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
+        documents = raw_documents
+
+    if not documents:
+        logger.info("[Agent] Quality gate: zero results — skipping LLM")
+        yield {"type": "event", "event": "search_complete", "sources": 0}
+        yield {
+            "type": "metadata",
+            "answer": _OUT_OF_SCOPE_ANSWER,
+            "sources": [],
+            "raw_chunks": [],
+            "full_prompt": "",
+            "search_query": search_query,
+            "original_query": query,
+            "query_rewritten": search_query != query,
+        }
+        return
+
+    search_event_emitted = False
+    if not sttm_hops:
+        original_score = max(
+            (d.get("reranker_score") or d.get("score", 0)) for d in documents
+        )
+        top_score = original_score
+        retry_triggered = False
+        refined_query = None
+        retry_score = None
+        decision = "passed"
+
+        if RETRIEVAL_SCORE_THRESHOLD > 0 and top_score < RETRIEVAL_SCORE_THRESHOLD:
+            retry_triggered = True
+            unique_sources = _get_unique_source_names(documents)
+            yield {"type": "event", "event": "search_complete", "sources": len(unique_sources)}
+            yield {"type": "event", "event": "refining_search"}
+
+            refined_query = await _refine_query_for_retry(search_query, model_name)
+            if refined_query:
+                retry_raw = search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr)
+                if retry_raw:
+                    retry_score = max(
+                        (d.get("reranker_score") or d.get("score", 0)) for d in retry_raw
+                    )
+                    if retry_score >= top_score:
+                        raw_documents = retry_raw
+                        documents = retry_raw
+                        search_query = refined_query
+                        top_score = retry_score
+                        decision = "improved_via_retry"
+                    else:
+                        decision = "retry_worse_fallback"
+
+            if top_score < RETRIEVAL_SCORE_THRESHOLD:
+                decision = "blocked"
+
+        _log_retrieval_decision(search_query, original_score, retry_triggered, refined_query, retry_score, decision)
+
+        if retry_triggered and decision != "blocked":
+            unique_sources = _get_unique_source_names(documents)
+            yield {"type": "event", "event": "retry_search_complete", "sources": len(unique_sources)}
+            search_event_emitted = True
+
+        if decision == "blocked":
+            yield {
+                "type": "metadata",
+                "answer": _OUT_OF_SCOPE_ANSWER,
+                "sources": [],
+                "raw_chunks": raw_documents,
+                "full_prompt": "",
+                "search_query": search_query,
+                "original_query": query,
+                "query_rewritten": search_query != query,
+            }
+            return
+
     all_doc_names = None
     unique_sources = _get_unique_source_names(raw_documents)
     if len(unique_sources) > 1:
         all_doc_names = search_client.search_document_names(search_query)
 
-    # Pass ALL chunks to LLM context (not deduped) — LLM needs full context
+    if not search_event_emitted:
+        yield {"type": "event", "event": "search_complete", "sources": len(unique_sources)}
+
     context = _format_context(raw_documents, all_document_names=all_doc_names)
     sources = _build_sources(raw_documents)
 
@@ -541,6 +862,8 @@ Documents:
 Answer:"""
     messages.append(HumanMessage(content=user_prompt))
     full_prompt = f"=== SYSTEM PROMPT ===\n{effective_prompt}\n\n=== USER PROMPT (with context) ===\n{user_prompt}"
+
+    yield {"type": "event", "event": "generating"}
 
     llm = _build_llm(temperature=temperature, model_name=model_name)
     answer_chunks = []
@@ -588,12 +911,10 @@ def _filter_cited_sources(answer: str, sources: List[Source]) -> List[Source]:
     Parses [1], [2], etc. from the answer text. If no citations are found,
     returns all sources as fallback (the LLM may have used prose references).
     """
-    # Only match small numbers [1]-[99] to avoid false positives like [401] tax codes
     cited_indices = set(int(m) for m in re.findall(r"\[(\d{1,2})\]", answer))
     if not cited_indices:
         return sources
     filtered = [s for s in sources if s.get("index") in cited_indices]
-    # If parsed indices didn't match any actual source, fall back to all sources
     return filtered if filtered else sources
 
 

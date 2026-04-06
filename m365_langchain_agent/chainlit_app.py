@@ -31,11 +31,8 @@ from chainlit.input_widget import Select, Slider, TextInput
 from chainlit.types import ThreadDict
 from chainlit.user import User
 
-# UI configuration
-
 chainlit_config.ui.name = "ETS VA Assistant"
 chainlit_config.ui.default_theme = "light"
-# Use the exact uploaded JPG asset for both header branding and assistant avatars.
 chainlit_config.ui.logo_file_url = "/chat/public/ai-circle-logo.jpg"
 chainlit_config.ui.default_avatar_file_url = "/chat/public/ai-circle-logo.jpg"
 chainlit_config.ui.avatar_size = 40
@@ -46,21 +43,9 @@ chainlit_config.features.edit_message = False
 chainlit_config.ui.custom_css = "/public/custom.css"
 chainlit_config.ui.custom_js = "/public/debug-accordion.js"
 
-# Set SHOW_CHAT_SETTINGS=false to hide the gear icon / settings panel (Model, Top K, Temperature, System Prompt)
-# Set SHOW_CHAT_SETTINGS=true  (default) to show it
 SHOW_CHAT_SETTINGS = os.environ.get("SHOW_CHAT_SETTINGS", "true").lower().strip() == "true"
-
-# Debug panels toggle (Retrieved Chunks, Full LLM Prompt)
-# Set SHOW_DEBUG_PANELS=true  in dev to show chunk details after each response
-# Set SHOW_DEBUG_PANELS=false (default) for demo/prod — no debug output shown
 SHOW_DEBUG_PANELS = os.environ.get("SHOW_DEBUG_PANELS", "false").lower().strip() == "true"
-
-# Suggested follow-up prompts after each response
-# Set SHOW_SUGGESTED_PROMPTS=true (default) to show 3 clickable follow-up suggestions
-# Set SHOW_SUGGESTED_PROMPTS=false to disable
 SHOW_SUGGESTED_PROMPTS = os.environ.get("SHOW_SUGGESTED_PROMPTS", "true").lower().strip() == "true"
-
-# Greeting detection — respond directly without running the RAG pipeline
 _GREETING_WORDS = {"hello", "hi", "hey", "greetings", "good morning", "good afternoon", "good evening", "howdy", "hola"}
 _GREETING_RESPONSE = "Hello! I'm the **ETS Virtual Assistant**. How can I help you today?"
 _THANKS_WORDS = {"thank you", "thanks", "thankyou", "ty", "thx"}
@@ -74,33 +59,115 @@ from m365_langchain_agent.agent import (
     DEFAULT_TOP_K,
     DEFAULT_TEMPERATURE,
     DEFAULT_MODEL,
+    _STTM_KEYWORDS,
 )
 from m365_langchain_agent.cosmos_store import get_cosmos_store
 from m365_langchain_agent.chainlit_data_layer import CosmosDataLayer
 
+_COMPARISON_KEYWORDS = frozenset({
+    "difference", "differences", "compare", "comparison", "vs", "versus",
+    "distinguish", "contrast", "differ", "similar", "similarities",
+})
 
-# --- Data layer (conversation history sidebar) ---
-@cl.data_layer
-def get_data_layer():
-    return CosmosDataLayer()
+_REASONING_TEMPLATES: dict[str, dict] = {
+    "comparison": {
+        "intent":       "Understanding your comparison request",
+        "strategy":     "Determining approach — comparing across sources",
+        "retrieval":    "Reviewing {n} retrieved documents",
+        "reasoning":    "Identifying key differences and similarities",
+        "answer_prep":  "Preparing a structured comparison",
+    },
+    "sttm": {
+        "intent":       "Understanding your data lineage question",
+        "strategy":     "Determining approach — tracing field mappings across layers",
+        "retrieval":    "Reviewing {n} retrieved mappings",
+        "reasoning":    "Identifying transformation logic and hop-by-hop lineage",
+        "answer_prep":  "Preparing end-to-end lineage summary",
+    },
+    "general": {
+        "intent":       "Understanding your question",
+        "strategy":     "Determining approach — searching knowledge base",
+        "retrieval":    "Reviewing {n} retrieved documents",
+        "reasoning":    "Identifying key insights from retrieved information",
+        "answer_prep":  "Preparing a comprehensive answer",
+    },
+}
 
 
-# --- Auth: read user from SSO session (injected by middleware) ---
+def _classify_query(query: str) -> str:
+    """Classify query intent for reasoning trace text. Returns template key."""
+    q = query.lower()
+    if any(kw in q for kw in _STTM_KEYWORDS):
+        return "sttm"
+    words = set(q.split())
+    if words & _COMPARISON_KEYWORDS:
+        return "comparison"
+    return "general"
+
+
+def _render_event(evt: dict, template: dict) -> list[tuple[str, str]] | None:
+    """Map an agent event to one or more reasoning trace lines."""
+    name = evt.get("event", "")
+
+    if name == "rewriting_query":
+        return [("intent", f"… {template['intent']}")]
+
+    if name == "query_rewritten":
+        return [("intent", f"✔ {template['intent']}")]
+
+    if name == "search_start":
+        return [
+            ("intent", f"✔ {template['intent']}"),
+            ("strategy", f"… {template['strategy']}"),
+        ]
+
+    if name == "search_complete":
+        n = evt.get("sources", 0)
+        retrieval_text = template["retrieval"].format(n=n)
+        return [
+            ("strategy", f"✔ {template['strategy']}"),
+            ("retrieval", f"✔ {retrieval_text}"),
+            ("reasoning", f"… {template['reasoning']}"),
+        ]
+
+    if name == "refining_search":
+        return [("strategy", f"… Refining search for better results")]
+
+    if name == "retry_search_complete":
+        n = evt.get("sources", 0)
+        retrieval_text = template["retrieval"].format(n=n)
+        return [
+            ("strategy", f"✔ Refined search strategy"),
+            ("retrieval", f"✔ {retrieval_text}"),
+            ("reasoning", f"… {template['reasoning']}"),
+        ]
+
+    if name == "generating":
+        return [
+            ("reasoning", f"✔ {template['reasoning']}"),
+            ("answer_prep", f"… {template['answer_prep']}"),
+        ]
+
+    return None
+
+
+_DISABLE_DATA_LAYER = os.environ.get("DISABLE_DATA_LAYER", "false").lower().strip() == "true"
+
+if not _DISABLE_DATA_LAYER:
+    @cl.data_layer
+    def get_data_layer():
+        return CosmosDataLayer()
+
+
 @cl.header_auth_callback
 def header_auth_callback(headers: dict) -> User:
-    """Read authenticated user from custom headers injected by SSOAuthMiddleware.
-
-    Returns:
-        User object with identifier=oid and metadata containing name, email, role
-    """
-    # Read custom headers set by the middleware
+    """Build the Chainlit user from SSO middleware headers."""
     user_oid = headers.get("x-user-oid")
     user_name = headers.get("x-user-name", "Unknown User")
     user_email = headers.get("x-user-email", "")
     user_role = headers.get("x-user-role", "user")
 
     if not user_oid:
-        # Fall back to default user if SSO is disabled
         logger.warning("[Chainlit] No user identity in headers — SSO may be disabled")
         return User(identifier="default-user", metadata={"role": "user"})
 
@@ -124,13 +191,14 @@ async def rename_author(author: str) -> str:
     return author
 
 
+SHOW_STARTER_PROMPTS = os.environ.get("SHOW_STARTER_PROMPTS", "true").lower().strip() == "true"
+
+
 @cl.set_starters
 async def set_starters():
-    """Card-style starter prompts shown in the empty chat state.
-
-    Reads from STARTER_PROMPTS env var (JSON array of {label, message} objects).
-    Returns None (no starters) if the env var is missing or empty.
-    """
+    """Return starter prompts from `STARTER_PROMPTS` when enabled."""
+    if not SHOW_STARTER_PROMPTS:
+        return None
     raw = os.environ.get("STARTER_PROMPTS", "").strip()
     if not raw:
         return None
@@ -142,7 +210,7 @@ async def set_starters():
     if not items:
         return None
     return [
-        cl.Starter(label=item["message"], message=item["message"])
+        cl.Starter(label=item.get("label", item["message"]), message=item["message"])
         for item in items
         if item.get("message")
     ]
@@ -170,22 +238,8 @@ def _build_suggestion_chips_html(suggestions: list[str]) -> str:
     )
 
 
-@cl.on_chat_start
-async def on_chat_start():
-    """Initialize a new conversation session with configurable settings."""
-    conversation_id = f"chainlit-{uuid.uuid4().hex[:12]}"
-    cl.user_session.set("conversation_id", conversation_id)
-    logger.info(f"[Chainlit] New session: conversation_id={conversation_id}")
-
-    # Welcome message
-    await cl.Message(
-        content=(
-            "Welcome to ETS Virtual Assistant. Ask a question to instantly search "
-            "our Knowledge Base and internal resources."
-        ),
-        author="assistant",
-    ).send()
-
+async def _init_chat_settings():
+    """Initialize ChatSettings widgets and store in session. Shared by start/resume."""
     if SHOW_CHAT_SETTINGS:
         available_models = get_available_models()
         settings = await cl.ChatSettings(
@@ -226,6 +280,16 @@ async def on_chat_start():
         cl.user_session.set("settings", settings)
     else:
         cl.user_session.set("settings", {})
+
+
+@cl.on_chat_start
+async def on_chat_start():
+    """Initialize a new conversation session with configurable settings."""
+    conversation_id = f"chainlit-{uuid.uuid4().hex[:12]}"
+    cl.user_session.set("conversation_id", conversation_id)
+    logger.info(f"[Chainlit] New session: conversation_id={conversation_id}")
+
+    await _init_chat_settings()
 
 
 @cl.on_chat_resume
@@ -235,46 +299,7 @@ async def on_chat_resume(thread: ThreadDict):
     cl.user_session.set("conversation_id", conversation_id)
     logger.info(f"[Chainlit] Resumed thread: conversation_id={conversation_id}")
 
-    if SHOW_CHAT_SETTINGS:
-        available_models = get_available_models()
-        settings = await cl.ChatSettings(
-            [
-                Select(
-                    id="model",
-                    label="Model",
-                    values=available_models,
-                    initial_value=DEFAULT_MODEL if DEFAULT_MODEL in available_models else available_models[0],
-                    description="Azure OpenAI deployment to use for generation.",
-                ),
-                Slider(
-                    id="top_k",
-                    label="Top K (Retrieved Chunks)",
-                    initial=DEFAULT_TOP_K,
-                    min=1,
-                    max=20,
-                    step=1,
-                    description="Number of chunks to retrieve from AI Search.",
-                ),
-                Slider(
-                    id="temperature",
-                    label="Temperature",
-                    initial=DEFAULT_TEMPERATURE,
-                    min=0.0,
-                    max=1.0,
-                    step=0.05,
-                    description="LLM randomness. Lower = more deterministic, higher = more creative.",
-                ),
-                TextInput(
-                    id="system_prompt",
-                    label="System Prompt",
-                    initial=SYSTEM_PROMPT,
-                    description="Instructions for the LLM. Edit to change behavior.",
-                ),
-            ]
-        ).send()
-        cl.user_session.set("settings", settings)
-    else:
-        cl.user_session.set("settings", {})
+    await _init_chat_settings()
 
 
 @cl.on_settings_update
@@ -301,7 +326,6 @@ async def on_message(message: cl.Message):
         await cl.Message(content="I didn't receive a message. Please try again.", author="assistant").send()
         return
 
-    # Handle simple greetings/thanks without running the RAG pipeline
     normalized = user_text.strip().lower().rstrip("!.,?")
     if normalized in _GREETING_WORDS:
         await cl.Message(content=_GREETING_RESPONSE, author="assistant").send()
@@ -310,7 +334,6 @@ async def on_message(message: cl.Message):
         await cl.Message(content=_THANKS_RESPONSE, author="assistant").send()
         return
 
-    # Read current settings from session
     settings = cl.user_session.get("settings") or {}
     model = settings.get("model", DEFAULT_MODEL)
     top_k = int(settings.get("top_k", DEFAULT_TOP_K))
@@ -323,9 +346,7 @@ async def on_message(message: cl.Message):
         f"text={user_text[:100]}"
     )
 
-    # Load conversation history from CosmosDB (with user validation)
     try:
-        # Get current user from session for validation
         user = cl.user_session.get("user")
         user_oid = user.identifier if user and user.identifier != "default-user" else None
 
@@ -335,7 +356,6 @@ async def on_message(message: cl.Message):
         logger.error(f"[Chainlit] CosmosDB read failed: {e}")
         history = []
 
-    # Stream the RAG agent response token by token
     msg = cl.Message(content="", author="assistant")
     await msg.send()
 
@@ -347,6 +367,14 @@ async def on_message(message: cl.Message):
     original_query = ""
     query_rewritten = False
 
+    trace_lines: list[tuple[str, str]] = []
+    reasoning_template = _REASONING_TEMPLATES[_classify_query(user_text)]
+    streaming_started = False
+
+    trace_lines.append(("intent", f"… {reasoning_template['intent']}"))
+    msg.content = trace_lines[0][1]
+    await msg.update()
+
     async for chunk in invoke_agent_stream(
         query=user_text,
         conversation_history=history,
@@ -355,18 +383,65 @@ async def on_message(message: cl.Message):
         system_prompt=system_prompt if system_prompt != SYSTEM_PROMPT else None,
         model_name=model if model != DEFAULT_MODEL else None,
     ):
-        if isinstance(chunk, dict) and chunk.get("type") == "metadata":
-            answer = chunk["answer"]
-            sources = chunk["sources"]
-            raw_chunks = chunk.get("raw_chunks", [])
-            full_prompt = chunk.get("full_prompt", "")
-            search_query = chunk.get("search_query", "")
-            original_query = chunk.get("original_query", "")
-            query_rewritten = chunk.get("query_rewritten", False)
+        if isinstance(chunk, dict):
+            if chunk.get("type") == "event":
+                rendered = _render_event(chunk, reasoning_template)
+                if rendered:
+                    for key, text in rendered:
+                        replaced = False
+                        for i, (k, _) in enumerate(trace_lines):
+                            if k == key:
+                                trace_lines[i] = (key, text)
+                                replaced = True
+                                break
+                        if not replaced:
+                            trace_lines.append((key, text))
+                    msg.content = "<br>".join(t for _, t in trace_lines)
+                    await msg.update()
+            elif chunk.get("type") == "metadata":
+                answer = chunk["answer"]
+                sources = chunk["sources"]
+                raw_chunks = chunk.get("raw_chunks", [])
+                full_prompt = chunk.get("full_prompt", "")
+                search_query = chunk.get("search_query", "")
+                original_query = chunk.get("original_query", "")
+                query_rewritten = chunk.get("query_rewritten", False)
         else:
+            if not streaming_started:
+                streaming_started = True
+                for i, (k, t) in enumerate(trace_lines):
+                    if t.startswith("…"):
+                        trace_lines[i] = (k, t.replace("…", "✔", 1))
+                if trace_lines:
+                    collapsed = "<br>".join(t for _, t in trace_lines)
+                    msg.content = (
+                        '<details class="thinking-accordion">'
+                        '<summary class="thinking-summary">Thinking</summary>'
+                        f'<div class="thinking-body">{collapsed}</div>'
+                        "</details>\n\n"
+                    )
+                else:
+                    msg.content = ""
+                await msg.update()
             await msg.stream_token(chunk)
 
-    # Append source links after streaming completes
+    if not streaming_started and answer:
+        for i, (k, t) in enumerate(trace_lines):
+            if t.startswith("…"):
+                trace_lines[i] = (k, t.replace("…", "✔", 1))
+        if trace_lines:
+            collapsed = "<br>".join(t for _, t in trace_lines)
+            msg.content = (
+                '<details class="thinking-accordion">'
+                '<summary class="thinking-summary">Thinking</summary>'
+                f'<div class="thinking-body">{collapsed}</div>'
+                "</details>\n\n"
+            )
+        else:
+            msg.content = ""
+        msg.content += answer
+        await msg.update()
+
     source_lines = []
     for s in sources:
         title = s.get("title", "Untitled")
@@ -378,17 +453,13 @@ async def on_message(message: cl.Message):
         else:
             source_lines.append(f"[{idx}] {title}")
 
-    # Only append Sources block if the LLM answer doesn't already list citations
     answer_lower = answer.lower()
-    has_citation_section = "citations:" in answer_lower or "sources:" in answer_lower
+    has_citation_section = "citations:" in answer_lower or "sources:" in answer_lower or "cited sources:" in answer_lower
     if source_lines and not has_citation_section:
-        await msg.stream_token("\n\n---\n**Sources:**\n" + "\n".join(source_lines))
+        await msg.stream_token("\n\n---\n**Cited Sources:**\n" + "\n".join(source_lines))
 
     await msg.update()
 
-    # --- Debug Panels (dev only: SHOW_DEBUG_PANELS=true) ---
-    # Renders native <details> accordions directly in one stacked group.
-    # Collapsed by default — click to expand. In prod: SHOW_DEBUG_PANELS=false — hidden.
     if SHOW_DEBUG_PANELS and raw_chunks:
         index_name = os.environ.get("AZURE_SEARCH_INDEX_NAME", "N/A")
         search_endpoint = os.environ.get("AZURE_SEARCH_ENDPOINT", "N/A")
@@ -402,7 +473,6 @@ async def on_message(message: cl.Message):
                 safe = safe[:limit]
             return safe.replace("\n", "<br>")
 
-        # Build search query content
         search_parts = []
         search_parts.append(f"<b>Original Query:</b> {escape(original_query or user_text)}<br>")
         if query_rewritten:
@@ -433,7 +503,6 @@ async def on_message(message: cl.Message):
                 search_parts.append(f"<b>Semantic Relevance Range:</b> {min(rr_scores):.4f} — {max(rr_scores):.4f} (out of 4.0)<br>")
         search_html = "".join(search_parts)
 
-        # Build chunks content
         chunk_parts = []
         chunk_parts.append(f"Query: {escape(user_text)}<br>")
         chunk_parts.append(f"Index: {index_name} | Top K: {top_k} | Model: {model} | Temp: {temperature}<br>")
@@ -462,14 +531,12 @@ async def on_message(message: cl.Message):
 
         chunks_html = "".join(chunk_parts)
 
-        # Build prompt content
         prompt_html = (
             f'<div class="debug-prompt-pre">{escape(full_prompt)}</div>'
             if full_prompt and full_prompt.strip()
             else "No prompt captured."
         )
 
-        # Build settings content
         settings_html = (
             f"Model: {model}<br>Top K: {top_k}<br>Temperature: {temperature}<br>"
             f"System Prompt: {prompt_type}<br>Index: {index_name}<br>"
@@ -487,9 +554,7 @@ async def on_message(message: cl.Message):
 
         await cl.Message(content=accordion_msg, author="assistant").send()
 
-    # Save to CosmosDB for conversation history (with user identity)
     try:
-        # Get current user from session
         user = cl.user_session.get("user")
         user_oid = user.identifier if user and user.identifier != "default-user" else None
         user_name = user.metadata.get("name") if user else None
@@ -512,7 +577,6 @@ async def on_message(message: cl.Message):
         f"model={model}, sources={len(sources)}, raw_chunks={len(raw_chunks)}"
     )
 
-    # --- Suggested follow-up prompts (rendered as custom HTML chips) ---
     if SHOW_SUGGESTED_PROMPTS and answer and not answer.startswith("Sorry,"):
         try:
             suggestions = await generate_suggested_prompts(
