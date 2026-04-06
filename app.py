@@ -300,28 +300,28 @@ async def root():
 
 
 @app.get("/chat/auth/login")
-async def auth_login(request: Request):
+async def auth_login_chat(request: Request):
     """Initiate Entra ID SSO login flow."""
     from m365_langchain_agent.auth import login_route
     return login_route(request)
 
 
 @app.get("/chat/auth/callback")
-async def auth_callback(request: Request):
+async def auth_callback_chat(request: Request):
     """Handle OAuth callback from Entra ID."""
     from m365_langchain_agent.auth import callback_route
     return callback_route(request)
 
 
 @app.get("/chat/auth/logout")
-async def auth_logout(request: Request):
+async def auth_logout_chat(request: Request):
     """Logout and clear SSO session."""
     from m365_langchain_agent.auth import logout_route
     return logout_route(request)
 
 
 @app.get("/chat/auth/error")
-async def auth_error(request: Request):
+async def auth_error_chat(request: Request):
     """Auth error page."""
     message = request.query_params.get("message", "Authentication failed")
     return Response(
@@ -352,10 +352,14 @@ async def auth_signed_out():
     )
 
 
+# ---------------------------------------------------------------------------
+# SSO Middleware (protects /chat/ routes in Chainlit UI mode)
+# ---------------------------------------------------------------------------
+
 class SSOAuthMiddleware(BaseHTTPMiddleware):
     """Middleware that enforces SSO authentication for Chainlit UI routes.
 
-    - Browser page loads (/chat/, /chat): redirect to /auth/login if no session cookie.
+    - Browser page loads (/chat/, /chat): redirect to /chat/auth/login if no session cookie.
     - Internal Chainlit requests (WebSocket, Socket.IO, APIs, assets): inject user
       headers if cookie is present, otherwise pass through — Chainlit's
       header_auth_callback will fall back to default-user.

@@ -9,19 +9,6 @@
     return document.querySelector("textarea");
   }
 
-  function ensureLogoutButton() {
-    var existing = document.querySelector("#sso-logout-button");
-    if (existing) return;
-
-    var button = document.createElement("a");
-    button.id = "sso-logout-button";
-    button.href = "/chat/auth/logout";
-    button.textContent = "Log out";
-    button.setAttribute("aria-label", "Log out");
-
-    document.body.appendChild(button);
-  }
-
   function populateInput(text) {
     var textarea = getTextarea();
     if (!textarea) return;
@@ -210,6 +197,19 @@
         });
       })(prompt);
     }
+  }
+
+  function ensureLogoutButton() {
+    // Single, clean logout button implementation
+    // Styled via #sso-logout-button in custom.css
+    if (document.querySelector("#sso-logout-button")) return;
+
+    var button = document.createElement("a");
+    button.id = "sso-logout-button";
+    button.href = "/chat/auth/logout";
+    button.textContent = "Log out";
+    button.setAttribute("aria-label", "Sign out of your account");
+    document.body.appendChild(button);
   }
 
   function applyUiUpdates() {
