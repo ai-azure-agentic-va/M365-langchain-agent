@@ -6,7 +6,9 @@ Uses MSAL (Microsoft Authentication Library) and signed session cookies.
 Environment variables required:
     ENTRA_TENANT_ID: Azure AD tenant ID
     ENTRA_CLIENT_ID: App Registration client ID
-    ENTRA_CLIENT_SECRET: App Registration client secret
+    ENTRA_CLIENT_SECRET: App Registration client secret (fallback if Key Vault unavailable)
+    KEYVAULT_URL: Azure Key Vault URL (optional, for secure secret storage)
+    ENTRA_CLIENT_SECRET_NAME: Name of secret in Key Vault (optional)
     ENTRA_REDIRECT_URI: OAuth callback URL (e.g., https://<fqdn>/auth/callback)
     SESSION_SECRET: Secret key for encrypting session cookies
     AI_VA_ADMINS_GROUP_ID: Optional - Group OID for admins
@@ -22,11 +24,12 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 
+from m365_langchain_agent.key_vault import get_entra_client_secret
+
 logger = logging.getLogger(__name__)
 
 ENTRA_TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "")
 ENTRA_CLIENT_ID = os.environ.get("ENTRA_CLIENT_ID", "")
-ENTRA_CLIENT_SECRET = os.environ.get("ENTRA_CLIENT_SECRET", "")
 ENTRA_REDIRECT_URI = os.environ.get("ENTRA_REDIRECT_URI", "")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "")
 AI_VA_ADMINS_GROUP_ID = os.environ.get("AI_VA_ADMINS_GROUP_ID", "")
@@ -43,13 +46,28 @@ _msal_app = None
 
 
 def get_msal_app():
-    """Get or create the MSAL ConfidentialClientApplication."""
+    """Get or create the MSAL ConfidentialClientApplication.
+
+    Fetches the client secret from Azure Key Vault (if configured) or falls back
+    to the hardcoded ENTRA_CLIENT_SECRET environment variable.
+    """
     global _msal_app
     if _msal_app is None:
-        if not ENTRA_TENANT_ID or not ENTRA_CLIENT_ID or not ENTRA_CLIENT_SECRET:
+        # Get client secret from Key Vault with fallback
+        try:
+            client_secret = get_entra_client_secret()
+        except ValueError as e:
+            raise ValueError(
+                f"Failed to get Entra client secret: {e}. "
+                "Set ENTRA_CLIENT_SECRET (fallback) or configure Key Vault "
+                "(KEYVAULT_URL and ENTRA_CLIENT_SECRET_NAME)."
+            )
+
+        if not ENTRA_TENANT_ID or not ENTRA_CLIENT_ID or not client_secret:
             raise ValueError(
                 "Entra ID SSO not configured. Set ENTRA_TENANT_ID, ENTRA_CLIENT_ID, "
-                "ENTRA_CLIENT_SECRET, ENTRA_REDIRECT_URI, SESSION_SECRET environment variables."
+                "and either ENTRA_CLIENT_SECRET (fallback) or Key Vault configuration "
+                "(KEYVAULT_URL, ENTRA_CLIENT_SECRET_NAME)."
             )
 
         import msal
@@ -58,7 +76,7 @@ def get_msal_app():
         _msal_app = msal.ConfidentialClientApplication(
             ENTRA_CLIENT_ID,
             authority=authority,
-            client_credential=ENTRA_CLIENT_SECRET,
+            client_credential=client_secret,
         )
         logger.info(f"[Auth] MSAL initialized: tenant={ENTRA_TENANT_ID}, client_id={ENTRA_CLIENT_ID}")
 
@@ -107,6 +125,45 @@ def read_session_cookie(cookie_value: str, max_age: int = None) -> Optional[Dict
     except (BadSignature, SignatureExpired) as e:
         logger.warning(f"[Auth] Invalid/expired session cookie: {e}")
         return None
+
+
+def should_refresh_session_cookie(cookie_value: str, refresh_threshold: float = 0.5) -> bool:
+    """Check if a session cookie should be refreshed.
+
+    Only refreshes if the cookie is older than refresh_threshold * SESSION_IDLE_TIMEOUT.
+    This prevents unnecessary page reloads while maintaining session security.
+
+    Args:
+        cookie_value: The session cookie value
+        refresh_threshold: Fraction of idle timeout before refresh (default: 0.5 = 50%)
+
+    Returns:
+        True if cookie should be refreshed, False otherwise
+    """
+    try:
+        import time
+        serializer = get_session_serializer()
+        # Load with return_timestamp=True to get both data and timestamp
+        data, timestamp = serializer.loads_unsafe(cookie_value)
+
+        if data is None:
+            # Invalid signature - should refresh
+            return True
+
+        # Calculate cookie age
+        age = time.time() - timestamp
+        refresh_age = SESSION_IDLE_TIMEOUT * refresh_threshold
+
+        # Refresh if cookie is older than threshold
+        should_refresh = age >= refresh_age
+
+        if should_refresh:
+            logger.debug(f"[Auth] Cookie age {age:.0f}s >= threshold {refresh_age:.0f}s - refreshing")
+
+        return should_refresh
+    except Exception as e:
+        logger.warning(f"[Auth] Error checking cookie age: {e} - will refresh")
+        return True
 
 
 def get_user_from_request(request: Request) -> Optional[Dict]:
