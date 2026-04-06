@@ -337,7 +337,7 @@ async def auth_signed_out():
         content=(
             "<html><body style='font-family: Inter, Arial, sans-serif; padding: 32px;'>"
             "<h1>Signed out</h1>"
-            "<p>You have been signed out of the application and the Entra SSO session.</p>"
+            "<p>You have been signed out of the ETS Virtual Assistant.</p>"
             "<script>"
             "try { localStorage.clear(); } catch (e) {}"
             "try { sessionStorage.clear(); } catch (e) {}"
