@@ -300,64 +300,32 @@ async def root():
 
 
 @app.get("/chat/auth/login")
-async def auth_login_chat(request: Request):
+async def auth_login(request: Request):
     """Initiate Entra ID SSO login flow."""
     from m365_langchain_agent.auth import login_route
     return login_route(request)
 
 
 @app.get("/chat/auth/callback")
-async def auth_callback_chat(request: Request):
+async def auth_callback(request: Request):
     """Handle OAuth callback from Entra ID."""
     from m365_langchain_agent.auth import callback_route
     return callback_route(request)
 
 
 @app.get("/chat/auth/logout")
-async def auth_logout_chat(request: Request):
+async def auth_logout(request: Request):
     """Logout and clear SSO session."""
     from m365_langchain_agent.auth import logout_route
     return logout_route(request)
 
 
 @app.get("/chat/auth/error")
-async def auth_error_chat(request: Request):
+async def auth_error(request: Request):
     """Auth error page."""
     message = request.query_params.get("message", "Authentication failed")
     return Response(
         content=f"<html><body><h1>Authentication Error</h1><p>{message}</p><p><a href='/chat/auth/login'>Try again</a></p></body></html>",
-        media_type="text/html",
-    )
-
-
-# Duplicate routes without /chat prefix for backward compatibility with Azure config
-@app.get("/auth/login")
-async def auth_login(request: Request):
-    """Initiate Entra ID SSO login flow (without /chat prefix)."""
-    from m365_langchain_agent.auth import login_route
-    return login_route(request)
-
-
-@app.get("/auth/callback")
-async def auth_callback(request: Request):
-    """Handle OAuth callback from Entra ID (without /chat prefix)."""
-    from m365_langchain_agent.auth import callback_route
-    return callback_route(request)
-
-
-@app.get("/auth/logout")
-async def auth_logout(request: Request):
-    """Logout and clear SSO session (without /chat prefix)."""
-    from m365_langchain_agent.auth import logout_route
-    return logout_route(request)
-
-
-@app.get("/auth/error")
-async def auth_error(request: Request):
-    """Auth error page (without /chat prefix)."""
-    message = request.query_params.get("message", "Authentication failed")
-    return Response(
-        content=f"<html><body><h1>Authentication Error</h1><p>{message}</p><p><a href='/auth/login'>Try again</a></p></body></html>",
         media_type="text/html",
     )
 
@@ -384,14 +352,10 @@ async def auth_signed_out():
     )
 
 
-# ---------------------------------------------------------------------------
-# SSO Middleware (protects /chat/ routes in Chainlit UI mode)
-# ---------------------------------------------------------------------------
-
 class SSOAuthMiddleware(BaseHTTPMiddleware):
     """Middleware that enforces SSO authentication for Chainlit UI routes.
 
-    - Browser page loads (/chat/, /chat): redirect to /chat/auth/login if no session cookie.
+    - Browser page loads (/chat/, /chat): redirect to /auth/login if no session cookie.
     - Internal Chainlit requests (WebSocket, Socket.IO, APIs, assets): inject user
       headers if cookie is present, otherwise pass through — Chainlit's
       header_auth_callback will fall back to default-user.
