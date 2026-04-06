@@ -7,6 +7,9 @@ langchain-core>=0.3.29
 azure-search-documents>=11.6.0b7
 azure-identity>=1.19.0
 
+# Azure Key Vault (for secure secret management)
+azure-keyvault-secrets>=4.7.0
+
 # CosmosDB
 azure-cosmos>=4.7.0
 

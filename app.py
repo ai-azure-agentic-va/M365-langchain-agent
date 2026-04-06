@@ -416,7 +416,7 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
             from m365_langchain_agent.auth import (
                 get_user_from_request, create_session_cookie,
                 SESSION_COOKIE_NAME, SESSION_IDLE_TIMEOUT, SESSION_COOKIE_SECURE,
-                SIGNED_OUT_COOKIE_NAME,
+                SIGNED_OUT_COOKIE_NAME, should_refresh_session_cookie,
             )
 
             user = get_user_from_request(request)
@@ -429,15 +429,22 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
                 request.scope["headers"].append((b"x-user-role", user["role"].encode()))
 
                 response = await call_next(request)
-                cookie_data = {k: v for k, v in user.items() if k != "role"}
-                response.set_cookie(
-                    key=SESSION_COOKIE_NAME,
-                    value=create_session_cookie(cookie_data),
-                    max_age=SESSION_IDLE_TIMEOUT,
-                    httponly=True,
-                    secure=SESSION_COOKIE_SECURE,
-                    samesite="lax",
-                )
+
+                # Only refresh cookie if it's older than 50% of idle timeout
+                # This prevents double-reload on sign-in while maintaining session security
+                cookie_value = request.cookies.get(SESSION_COOKIE_NAME)
+                if cookie_value and should_refresh_session_cookie(cookie_value):
+                    cookie_data = {k: v for k, v in user.items() if k != "role"}
+                    response.set_cookie(
+                        key=SESSION_COOKIE_NAME,
+                        value=create_session_cookie(cookie_data),
+                        max_age=SESSION_IDLE_TIMEOUT,
+                        httponly=True,
+                        secure=SESSION_COOKIE_SECURE,
+                        samesite="lax",
+                    )
+                    logger.debug("[Auth] Session cookie refreshed")
+
                 return response
             else:
                 is_passthrough = (
