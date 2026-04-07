@@ -457,6 +457,17 @@ button[title*="clipboard" i],
     display: none !important;
 }
 
+/* Hide Readme button/link */
+button[aria-label*="readme" i],
+button[title*="readme" i],
+a[aria-label*="readme" i],
+a[title*="readme" i],
+[class*="readme" i],
+#readme-button,
+.readme-link {
+    display: none !important;
+}
+
 @media (max-width: 768px) {
     .suggestion-chip {
         padding: 12px 16px;

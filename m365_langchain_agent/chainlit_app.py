@@ -40,8 +40,8 @@ chainlit_config.features.spontaneous_file_upload = None
 chainlit_config.features.unsafe_allow_html = True
 chainlit_config.features.edit_message = False
 
-chainlit_config.ui.custom_css = "/public/custom.css"
-chainlit_config.ui.custom_js = "/public/debug-accordion.js"
+chainlit_config.ui.custom_css = "/public/custom.css?v=4"
+chainlit_config.ui.custom_js = "/public/debug-accordion.js?v=4"
 
 SHOW_CHAT_SETTINGS = os.environ.get("SHOW_CHAT_SETTINGS", "true").lower().strip() == "true"
 SHOW_DEBUG_PANELS = os.environ.get("SHOW_DEBUG_PANELS", "false").lower().strip() == "true"

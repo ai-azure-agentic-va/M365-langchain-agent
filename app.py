@@ -192,6 +192,13 @@ async def readiness():
     }
 
 
+@app.get("/sso-status")
+async def sso_status():
+    """Return SSO configuration status."""
+    enable_sso = os.environ.get("ENABLE_SSO", "true").lower().strip() == "true"
+    return {"enabled": enable_sso}
+
+
 @app.get("/starter-prompts")
 async def starter_prompts():
     """Return starter prompts configured via env flags and STARTER_PROMPTS JSON."""

@@ -4,6 +4,8 @@
   var scheduled = false;
   var starterData = null;
   var starterDataLoaded = false;
+  var ssoEnabled = null;
+  var ssoStatusChecked = false;
 
   function getTextarea() {
     return document.querySelector("textarea");
@@ -22,6 +24,23 @@
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     textarea.dispatchEvent(new Event("change", { bubbles: true }));
     textarea.focus();
+  }
+
+  function checkSsoStatus() {
+    if (ssoStatusChecked) return;
+    ssoStatusChecked = true;
+
+    fetch("../sso-status")
+      .then(function (r) {
+        return r.ok ? r.json() : null;
+      })
+      .then(function (data) {
+        ssoEnabled = data && data.enabled === true;
+        scheduleApply();
+      })
+      .catch(function () {
+        ssoEnabled = false;
+      });
   }
 
   function loadStarterData() {
@@ -199,10 +218,40 @@
     }
   }
 
+  function hideReadmeLink() {
+    // Hide the Readme link/button
+    var buttons = document.querySelectorAll("button, a");
+    for (var i = 0; i < buttons.length; i++) {
+      var btn = buttons[i];
+      var text = btn.textContent || "";
+      var ariaLabel = btn.getAttribute("aria-label") || "";
+      var title = btn.getAttribute("title") || "";
+
+      if (text.toLowerCase().trim() === "readme" ||
+          ariaLabel.toLowerCase().indexOf("readme") !== -1 ||
+          title.toLowerCase().indexOf("readme") !== -1) {
+        btn.style.display = "none";
+      }
+    }
+  }
+
   function ensureLogoutButton() {
     // Single, clean logout button implementation
     // Styled via #sso-logout-button in custom.css
-    if (document.querySelector("#sso-logout-button")) return;
+
+    var existingButton = document.querySelector("#sso-logout-button");
+
+    // If SSO is disabled, remove the button if it exists
+    if (ssoEnabled === false) {
+      if (existingButton) existingButton.remove();
+      return;
+    }
+
+    // If SSO status not yet loaded, don't show button yet
+    if (ssoEnabled === null) return;
+
+    // SSO is enabled - show the logout button
+    if (existingButton) return;
 
     var button = document.createElement("a");
     button.id = "sso-logout-button";
@@ -213,7 +262,9 @@
   }
 
   function applyUiUpdates() {
+    checkSsoStatus();
     ensureLogoutButton();
+    hideReadmeLink();
     hideFeedbackButtons();
     loadStarterData();
     enhanceNativeStarters();

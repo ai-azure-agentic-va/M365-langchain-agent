@@ -130,46 +130,24 @@ def read_session_cookie(cookie_value: str, max_age: int = None) -> Optional[Dict
 def should_refresh_session_cookie(cookie_value: str, refresh_threshold: float = 0.5, min_age: int = 30) -> bool:
     """Check if a session cookie should be refreshed.
 
-    Only refreshes if the cookie is older than refresh_threshold * SESSION_IDLE_TIMEOUT
-    and older than min_age seconds. This prevents unnecessary page reloads while
-    maintaining session security.
+    Note: Currently disabled to avoid page reloads. Cookie expiry is handled by max_age.
 
     Args:
         cookie_value: The session cookie value
-        refresh_threshold: Fraction of idle timeout before refresh (default: 0.5 = 50%)
-        min_age: Minimum age in seconds before refresh (default: 30)
+        refresh_threshold: Not used (kept for compatibility)
+        min_age: Not used (kept for compatibility)
 
     Returns:
-        True if cookie should be refreshed, False otherwise
+        False - refresh disabled to prevent unnecessary reloads
     """
     try:
-        import time
         serializer = get_session_serializer()
-        # Load with return_timestamp=True to get both data and timestamp
-        data, timestamp = serializer.loads_unsafe(cookie_value)
-
-        if data is None:
-            # Invalid signature - should refresh
-            return True
-
-        # Calculate cookie age
-        age = time.time() - timestamp
-        refresh_age = SESSION_IDLE_TIMEOUT * refresh_threshold
-
-        # Never refresh very new cookies (prevents double reload after login)
-        if age < min_age:
-            logger.debug(f"[Auth] Cookie too new ({age:.0f}s < {min_age}s) - skipping refresh")
-            return False
-
-        # Refresh if cookie is older than threshold
-        should_refresh = age >= refresh_age
-
-        if should_refresh:
-            logger.debug(f"[Auth] Cookie age {age:.0f}s >= threshold {refresh_age:.0f}s - refreshing")
-
-        return should_refresh
+        # Just validate the cookie can be loaded
+        serializer.loads_unsafe(cookie_value)
+        # Don't force refresh - let max_age handle expiry
+        return False
     except Exception as e:
-        logger.warning(f"[Auth] Error checking cookie age: {e} - will refresh")
+        logger.warning(f"[Auth] Error validating cookie: {e} - will refresh")
         return True
 
 
