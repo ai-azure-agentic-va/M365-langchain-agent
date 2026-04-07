@@ -293,14 +293,7 @@ def login_route(request: Request) -> RedirectResponse:
     Generates a random state, stores it in a temporary cookie, and redirects to Entra ID.
     """
     state = secrets.token_urlsafe(32)
-
-    # Check if user was recently signed out - if so, force fresh login prompt
     prompt = request.query_params.get("prompt")
-    was_signed_out = request.cookies.get(SIGNED_OUT_COOKIE_NAME)
-    if was_signed_out and not prompt:
-        prompt = "login"
-        logger.info("[Auth] Signed-out cookie detected - forcing prompt=login")
-
     auth_url = build_auth_url(state, prompt=prompt)
 
     response = RedirectResponse(url=auth_url)
@@ -313,7 +306,7 @@ def login_route(request: Request) -> RedirectResponse:
         samesite="lax",
     )
 
-    logger.info(f"[Auth] Login initiated: state={state[:8]}..., prompt={prompt or 'none'}")
+    logger.info(f"[Auth] Login initiated: state={state[:8]}...")
     return response
 
 
@@ -357,17 +350,10 @@ def callback_route(request: Request) -> RedirectResponse:
         samesite="lax",
     )
 
-    # Delete temporary cookies and signed-out marker (with path variations)
     response.delete_cookie(key="oauth_state")
-    response.delete_cookie(key="oauth_state", path="/")
     response.delete_cookie(key=SIGNED_OUT_COOKIE_NAME)
-    response.delete_cookie(key=SIGNED_OUT_COOKIE_NAME, path="/")
     response.delete_cookie(key=CHAINLIT_AUTH_COOKIE_NAME)
-    response.delete_cookie(key=CHAINLIT_AUTH_COOKIE_NAME, path="/")
-    response.delete_cookie(key=CHAINLIT_AUTH_COOKIE_NAME, path="/chat")
     response.delete_cookie(key=CHAINLIT_SESSION_COOKIE_NAME)
-    response.delete_cookie(key=CHAINLIT_SESSION_COOKIE_NAME, path="/")
-    response.delete_cookie(key=CHAINLIT_SESSION_COOKIE_NAME, path="/chat")
 
     logger.info(f"[Auth] Login successful: oid={user_data['oid']}, email={user_data['email']}")
     return response
@@ -385,13 +371,10 @@ def logout_route(request: Request) -> RedirectResponse:
     logout_url = build_logout_url(post_logout_uri)
 
     response = RedirectResponse(url=logout_url)
-
-    # Delete all session cookies (default path)
     response.delete_cookie(key=SESSION_COOKIE_NAME)
     response.delete_cookie(key="oauth_state")
     response.delete_cookie(key=CHAINLIT_AUTH_COOKIE_NAME)
     response.delete_cookie(key=CHAINLIT_SESSION_COOKIE_NAME)
-
     # Set a longer-lived signed-out cookie (1 hour) to ensure prompt=login is used
     response.set_cookie(
         key=SIGNED_OUT_COOKIE_NAME,
@@ -402,7 +385,7 @@ def logout_route(request: Request) -> RedirectResponse:
         samesite="lax",
     )
 
-    # Delete cookies with explicit path="/" to catch any path variations
+    # Delete session cookie with all possible path variations to ensure it's cleared
     response.delete_cookie(
         key=SESSION_COOKIE_NAME,
         path="/",
@@ -410,6 +393,7 @@ def logout_route(request: Request) -> RedirectResponse:
         httponly=True,
         samesite="lax"
     )
+    # Also delete any oauth_state cookie that might still exist
     response.delete_cookie(
         key="oauth_state",
         path="/",
@@ -417,11 +401,6 @@ def logout_route(request: Request) -> RedirectResponse:
         httponly=True,
         samesite="lax"
     )
-
-    # Delete Chainlit cookies with both "/" and "/chat" paths
-    for cookie_name in [CHAINLIT_AUTH_COOKIE_NAME, CHAINLIT_SESSION_COOKIE_NAME]:
-        response.delete_cookie(key=cookie_name, path="/")
-        response.delete_cookie(key=cookie_name, path="/chat")
 
     logger.info("[Auth] User logged out, cookies cleared")
     return response
