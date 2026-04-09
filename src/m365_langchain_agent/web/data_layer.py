@@ -2,14 +2,12 @@
 
 Enables the conversation history sidebar in Chainlit UI.
 Threads are scoped per user via user_id (Entra ID OID) when SSO is enabled.
-Reads/writes to the same CosmosDB container used by cosmos_store.py.
 """
 
 import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
 
 from chainlit.data import BaseDataLayer
 from chainlit.step import StepDict
@@ -22,13 +20,12 @@ from chainlit.types import (
 )
 from chainlit.user import PersistedUser, User
 
-from m365_langchain_agent.cosmos_store import get_cosmos_store
+from m365_langchain_agent.cosmos import get_cosmos_store
 
 logger = logging.getLogger(__name__)
 
 
 def _ts_to_iso(ts) -> str:
-    """Convert a Unix timestamp to ISO 8601 string for Chainlit UI."""
     try:
         return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
     except (TypeError, ValueError, OSError):
@@ -36,7 +33,7 @@ def _ts_to_iso(ts) -> str:
 
 
 class CosmosDataLayer(BaseDataLayer):
-    """Minimal data layer that exposes CosmosDB conversations in Chainlit's sidebar."""
+    """Minimal data layer exposing CosmosDB conversations in Chainlit's sidebar."""
 
     def build_debug_url(self) -> str:
         return ""
@@ -44,41 +41,41 @@ class CosmosDataLayer(BaseDataLayer):
     async def close(self) -> None:
         pass
 
-    async def get_user(self, identifier: str) -> Optional[PersistedUser]:
+    async def get_user(self, identifier: str) -> PersistedUser | None:
         return PersistedUser(id=identifier, identifier=identifier, createdAt=_ts_to_iso(time.time()))
 
-    async def create_user(self, user: User) -> Optional[PersistedUser]:
+    async def create_user(self, user: User) -> PersistedUser | None:
         return PersistedUser(id=user.identifier, identifier=user.identifier, createdAt=_ts_to_iso(time.time()))
 
     async def list_threads(
         self, pagination: Pagination, filters: ThreadFilter
     ) -> PaginatedResponse[ThreadDict]:
-        """List conversation threads for the current user in the sidebar."""
         try:
-            cosmos = get_cosmos_store()
+            cosmos = await get_cosmos_store()
 
             if filters.userId and filters.userId != "default-user":
                 query = "SELECT * FROM c WHERE c.user_id = @user_id ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
                 params = [
                     {"name": "@user_id", "value": filters.userId},
-                    {"name": "@limit", "value": pagination.first or 20}
+                    {"name": "@limit", "value": pagination.first or 20},
                 ]
 
                 if pagination.cursor:
                     query = "SELECT * FROM c WHERE c.user_id = @user_id AND c.updated_at < @cursor ORDER BY c.updated_at DESC OFFSET 0 LIMIT @limit"
                     params.append({"name": "@cursor", "value": float(pagination.cursor)})
             else:
-                logger.info("[DataLayer] Unauthenticated thread listing blocked")
                 return PaginatedResponse(
                     data=[],
                     pageInfo={"hasNextPage": False, "startCursor": None, "endCursor": None},
                 )
 
-            items = list(cosmos.container.query_items(
+            items = []
+            async for item in cosmos.container.query_items(
                 query=query,
                 parameters=params,
                 enable_cross_partition_query=True,
-            ))
+            ):
+                items.append(item)
 
             threads = []
             for item in items:
@@ -107,7 +104,6 @@ class CosmosDataLayer(BaseDataLayer):
                     ))
 
                 user_id = item.get("user_id", "default-user")
-
                 threads.append(ThreadDict(
                     id=item["id"],
                     createdAt=_ts_to_iso(item.get("created_at", time.time())),
@@ -120,7 +116,7 @@ class CosmosDataLayer(BaseDataLayer):
                     elements=None,
                 ))
 
-            logger.info(f"[DataLayer] Listed {len(threads)} threads")
+            logger.info("Listed %d threads", len(threads))
             return PaginatedResponse(
                 data=threads,
                 pageInfo={
@@ -130,14 +126,13 @@ class CosmosDataLayer(BaseDataLayer):
                 },
             )
         except Exception as e:
-            logger.error(f"[DataLayer] list_threads failed: {e}")
+            logger.error("list_threads failed: %s", e)
             return PaginatedResponse(data=[], pageInfo={"hasNextPage": False, "startCursor": None, "endCursor": None})
 
-    async def get_thread(self, thread_id: str) -> Optional[ThreadDict]:
-        """Load a specific thread's messages."""
+    async def get_thread(self, thread_id: str) -> ThreadDict | None:
         try:
-            cosmos = get_cosmos_store()
-            item = cosmos.container.read_item(item=thread_id, partition_key=thread_id)
+            cosmos = await get_cosmos_store()
+            item = await cosmos.container.read_item(item=thread_id, partition_key=thread_id)
             messages = item.get("messages", [])
 
             steps = []
@@ -157,7 +152,6 @@ class CosmosDataLayer(BaseDataLayer):
                 ))
 
             user_id = item.get("user_id", "default-user")
-
             return ThreadDict(
                 id=thread_id,
                 createdAt=_ts_to_iso(item.get("created_at", time.time())),
@@ -170,36 +164,28 @@ class CosmosDataLayer(BaseDataLayer):
                 elements=None,
             )
         except Exception as e:
-            logger.error(f"[DataLayer] get_thread failed for {thread_id}: {e}")
+            logger.error("get_thread failed for %s: %s", thread_id, e)
             return None
 
     async def get_thread_author(self, thread_id: str) -> str:
-        """Return the actual user_id who owns this thread."""
         try:
-            cosmos = get_cosmos_store()
-            item = cosmos.container.read_item(item=thread_id, partition_key=thread_id)
+            cosmos = await get_cosmos_store()
+            item = await cosmos.container.read_item(item=thread_id, partition_key=thread_id)
             return item.get("user_id", "default-user")
         except Exception as e:
-            logger.error(f"[DataLayer] get_thread_author failed for {thread_id}: {e}")
+            logger.error("get_thread_author failed for %s: %s", thread_id, e)
             return "default-user"
 
-    async def update_thread(
-        self,
-        thread_id: str,
-        name: Optional[str] = None,
-        user_id: Optional[str] = None,
-        metadata: Optional[Dict] = None,
-        tags: Optional[List[str]] = None,
-    ) -> None:
+    async def update_thread(self, thread_id: str, name=None, user_id=None, metadata=None, tags=None) -> None:
         pass
 
     async def delete_thread(self, thread_id: str) -> None:
         try:
-            cosmos = get_cosmos_store()
-            cosmos.container.delete_item(item=thread_id, partition_key=thread_id)
-            logger.info(f"[DataLayer] Deleted thread {thread_id}")
+            cosmos = await get_cosmos_store()
+            await cosmos.container.delete_item(item=thread_id, partition_key=thread_id)
+            logger.info("Deleted thread %s", thread_id)
         except Exception as e:
-            logger.error(f"[DataLayer] delete_thread failed: {e}")
+            logger.error("delete_thread failed: %s", e)
 
     async def create_step(self, step_dict: StepDict) -> None:
         pass
@@ -216,7 +202,7 @@ class CosmosDataLayer(BaseDataLayer):
     async def get_element(self, thread_id: str, element_id: str):
         return None
 
-    async def delete_element(self, element_id: str, thread_id: Optional[str] = None) -> None:
+    async def delete_element(self, element_id: str, thread_id=None) -> None:
         pass
 
     async def upsert_feedback(self, feedback: Feedback) -> str:
@@ -225,7 +211,7 @@ class CosmosDataLayer(BaseDataLayer):
     async def delete_feedback(self, feedback_id: str) -> bool:
         return True
 
-    async def get_favorite_steps(self, user_id: str) -> List[StepDict]:
+    async def get_favorite_steps(self, user_id: str) -> list[StepDict]:
         return []
 
     async def set_step_favorite(self, step_dict: StepDict, favorite: bool) -> StepDict:
