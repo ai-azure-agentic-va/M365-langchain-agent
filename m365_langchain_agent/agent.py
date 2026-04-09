@@ -525,6 +525,30 @@ def _get_unique_source_names(documents: List[Dict]) -> List[str]:
     return names
 
 
+def _extract_logical_path(source_url: str) -> Optional[str]:
+    """Extract the human-readable logical path from a blob storage URL.
+
+    Strips the blob host and container, returning only the meaningful
+    folder/file hierarchy.  Example:
+        https://acct.blob.core.windows.net/container/NFCU-VA-WIKI/Release/PayGuard.md
+        → NFCU-VA-WIKI/Release/PayGuard.md
+
+    Returns None if the URL is empty or has no path beyond the container.
+    """
+    if not source_url or not source_url.strip():
+        return None
+    try:
+        from urllib.parse import urlparse, unquote
+        parsed = urlparse(source_url)
+        # path looks like /container/rest/of/path
+        segments = parsed.path.strip("/").split("/", 1)
+        if len(segments) < 2 or not segments[1]:
+            return None
+        return unquote(segments[1])
+    except Exception:
+        return None
+
+
 def _format_context(documents: List[Dict], all_document_names: List[str] = None) -> str:
     """Format retrieved documents into numbered context for the LLM.
 
@@ -558,7 +582,11 @@ def _format_context(documents: List[Dict], all_document_names: List[str] = None)
     parts = []
     for i, d in enumerate(documents):
         title = d.get("document_title") or d.get("file_name") or "Untitled"
-        parts.append(f"[{i+1}] (Source: {title})\n{d['content']}")
+        header = f"[{i+1}] (Source: {title})"
+        logical_path = _extract_logical_path(d.get("source_url", ""))
+        if logical_path:
+            header += f"\nPath: {logical_path}"
+        parts.append(f"{header}\n{d['content']}")
 
     return hint + "\n\n".join(parts)
 

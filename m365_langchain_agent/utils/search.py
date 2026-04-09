@@ -103,6 +103,7 @@ class AzureSearchClient:
             search_text=query,
             vector_queries=[vector_query],
             top=retrieval_k,
+            include_total_count=True,
             query_type="semantic" if self.semantic_config else "simple",
             semantic_configuration_name=self.semantic_config or None,
         )
@@ -113,6 +114,7 @@ class AzureSearchClient:
             logger.info(f"[Search] Applying filter: {filter_expr}")
 
         results = self.search_client.search(**search_kwargs)
+        total_count = getattr(results, "get_count", lambda: None)()
 
         docs = []
         for r in results:
@@ -132,8 +134,9 @@ class AzureSearchClient:
 
         docs = docs[:top_k]
 
+        total_label = f", total={total_count}" if total_count is not None else ""
         logger.info(
-            f"[Search] query='{query[:80]}...' hits={len(docs)} (retrieved={retrieval_k}, returned={top_k}) "
+            f"[Search] query='{query[:80]}...' hits={len(docs)} (retrieved={retrieval_k}, returned={top_k}{total_label}) "
             f"index={os.environ.get('AZURE_SEARCH_INDEX_NAME')}"
         )
         return docs
