@@ -192,6 +192,7 @@ def _sttm_hop_search(
     base_query: str,
     hops: list[tuple[str, str]],
     top_k_per_hop: int = 8,
+    original_query: str = None,
 ) -> list[dict]:
     """Run targeted searches for each STTM hop and merge results.
 
@@ -212,10 +213,14 @@ def _sttm_hop_search(
     all_chunks: list[dict] = []
     seen_ids: set[str] = set()
 
+    # Reranker should score against the user's original intent, not the
+    # hop-augmented search_text (e.g. "query raw to int").
+    reranker_query = original_query or base_query
+
     for src, tgt in hops:
         hop_query = f"{base_query} {src} to {tgt}"
         try:
-            results = search_client.search(hop_query, top_k=top_k_per_hop)
+            results = search_client.search(hop_query, top_k=top_k_per_hop, semantic_query=reranker_query)
             new_count = 0
             for doc in results:
                 doc_id = doc.get("content", "")[:200]
@@ -618,13 +623,17 @@ async def invoke_agent(
 
     search_client = get_search_client()
 
+    # When search_text differs from the user's original query (rewrite, hop
+    # augmentation, retry), tell the semantic reranker to score against intent.
+    reranker_query = query if search_query != query else None
+
     sttm_hops = _detect_sttm_hops(query) if is_sttm else []
     if sttm_hops:
         logger.info(f"[Agent] STTM hop-by-hop mode: {len(sttm_hops)} hops detected")
-        raw_documents = _sttm_hop_search(search_client, search_query, sttm_hops)
+        raw_documents = _sttm_hop_search(search_client, search_query, sttm_hops, original_query=query)
         documents = raw_documents
     else:
-        raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
+        raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=reranker_query)
         logger.info(f"[Agent] Retrieved {len(raw_documents)} docs (top_k={effective_top_k}, sttm={is_sttm}) for: {search_query[:100]}")
         documents = raw_documents
 
@@ -648,7 +657,7 @@ async def invoke_agent(
             retry_triggered = True
             refined_query = await _refine_query_for_retry(search_query, model_name)
             if refined_query:
-                retry_raw = search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr)
+                retry_raw = search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=query)
                 if retry_raw:
                     retry_score = max(
                         (d.get("reranker_score") or d.get("score", 0)) for d in retry_raw
@@ -754,14 +763,15 @@ async def invoke_agent_stream(
     yield {"type": "event", "event": "search_start"}
 
     search_client = get_search_client()
+    reranker_query = query if search_query != query else None
 
     sttm_hops = _detect_sttm_hops(query) if is_sttm else []
     if sttm_hops:
         logger.info(f"[Agent] STTM hop-by-hop mode: {len(sttm_hops)} hops detected")
-        raw_documents = _sttm_hop_search(search_client, search_query, sttm_hops)
+        raw_documents = _sttm_hop_search(search_client, search_query, sttm_hops, original_query=query)
         documents = raw_documents
     else:
-        raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
+        raw_documents = search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=reranker_query)
         documents = raw_documents
 
     if not documents:
@@ -798,7 +808,7 @@ async def invoke_agent_stream(
 
             refined_query = await _refine_query_for_retry(search_query, model_name)
             if refined_query:
-                retry_raw = search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr)
+                retry_raw = search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=query)
                 if retry_raw:
                     retry_score = max(
                         (d.get("reranker_score") or d.get("score", 0)) for d in retry_raw

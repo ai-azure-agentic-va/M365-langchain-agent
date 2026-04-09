@@ -62,7 +62,7 @@ class AzureSearchClient:
         self.semantic_config = os.environ.get("AZURE_SEARCH_SEMANTIC_CONFIG_NAME", "")
         self.vector_field = os.environ.get("AZURE_SEARCH_EMBEDDING_FIELD", "content_vector")
 
-    def search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
+    def search(self, query: str, top_k: int = 5, filter_expr: str = None, semantic_query: str = None) -> List[Dict]:
         """Hybrid search: keyword + vector + semantic ranking.
 
         Args:
@@ -74,6 +74,10 @@ class AzureSearchClient:
                     "source_type eq 'wiki'"
                     "document_title eq 'Refund Policy'"
                     "pii_redacted eq true"
+            semantic_query: Optional original user intent for the semantic reranker.
+                When search_text is augmented (STTM hop terms, rewritten follow-ups,
+                retry refinements), pass the original query here so the reranker
+                scores against intent rather than the augmented text.
         """
         if not query or not query.strip():
             return []
@@ -85,6 +89,7 @@ class AzureSearchClient:
 
         query_vector = self.embeddings.embed_query(query)
 
+        # SDK 11.7.0b2 uses `k`; the REST API calls it `k_nearest_neighbors`
         vector_query = VectorizedQuery(
             vector=query_vector,
             k=retrieval_k,
@@ -98,6 +103,8 @@ class AzureSearchClient:
             query_type="semantic" if self.semantic_config else "simple",
             semantic_configuration_name=self.semantic_config or None,
         )
+        if self.semantic_config and semantic_query:
+            search_kwargs["semantic_query"] = semantic_query
         if filter_expr:
             search_kwargs["filter"] = filter_expr
             logger.info(f"[Search] Applying filter: {filter_expr}")
