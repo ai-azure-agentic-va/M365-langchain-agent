@@ -646,14 +646,19 @@ async def invoke_agent(
         logger.info(f"[Agent] STTM query detected — using STTM prompt, top_k={effective_top_k}")
 
     search_query = query
+    query_was_rewritten = False
     if conversation_history:
         search_query = await _rewrite_query_with_history(query, conversation_history, model_name)
+        query_was_rewritten = search_query != query
 
     search_client = get_search_client()
 
-    # When search_text differs from the user's original query (rewrite, hop
-    # augmentation, retry), tell the semantic reranker to score against intent.
-    reranker_query = query if search_query != query else None
+    # semantic_query tells the reranker what to score against.
+    # - History rewrite: rewritten query IS the enriched intent → let reranker
+    #   use search_text (None). The raw follow-up is often too vague.
+    # - STTM hop augmentation: appended layer terms are noise → use original query.
+    # - First turn / no rewrite: search_text == query → None (no override needed).
+    reranker_query = None  # default: reranker uses search_text
 
     sttm_hops = _detect_sttm_hops(query) if is_sttm else []
     if sttm_hops:
@@ -685,7 +690,9 @@ async def invoke_agent(
             retry_triggered = True
             refined_query = await _refine_query_for_retry(search_query, model_name)
             if refined_query:
-                retry_raw = search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=query)
+                # Reranker should score against search_query (the best intent
+                # before refinement), not the raw vague follow-up.
+                retry_raw = search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=search_query)
                 if retry_raw:
                     retry_score = max(
                         (d.get("reranker_score") or d.get("score", 0)) for d in retry_raw
@@ -783,15 +790,17 @@ async def invoke_agent_stream(
         logger.info(f"[Agent] STTM query detected — using STTM prompt, top_k={effective_top_k}")
 
     search_query = query
+    query_was_rewritten = False
     if conversation_history:
         yield {"type": "event", "event": "rewriting_query"}
         search_query = await _rewrite_query_with_history(query, conversation_history, model_name)
+        query_was_rewritten = search_query != query
         yield {"type": "event", "event": "query_rewritten", "query": search_query}
 
     yield {"type": "event", "event": "search_start"}
 
     search_client = get_search_client()
-    reranker_query = query if search_query != query else None
+    reranker_query = None  # rewritten query IS the enriched intent; don't override
 
     sttm_hops = _detect_sttm_hops(query) if is_sttm else []
     if sttm_hops:
@@ -836,7 +845,7 @@ async def invoke_agent_stream(
 
             refined_query = await _refine_query_for_retry(search_query, model_name)
             if refined_query:
-                retry_raw = search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=query)
+                retry_raw = search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=search_query)
                 if retry_raw:
                     retry_score = max(
                         (d.get("reranker_score") or d.get("score", 0)) for d in retry_raw

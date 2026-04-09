@@ -33,8 +33,9 @@ from chainlit.user import User
 
 chainlit_config.ui.name = "ETS VA Assistant"
 chainlit_config.ui.default_theme = "light"
-chainlit_config.ui.logo_file_url = "/chat/public/ai-circle-logo.jpg"
-chainlit_config.ui.default_avatar_file_url = "/chat/public/ai-circle-logo.jpg"
+_public_prefix = os.environ.get("CHAINLIT_PUBLIC_PREFIX", "/public")
+chainlit_config.ui.logo_file_url = f"{_public_prefix}/ai-circle-logo.jpg"
+chainlit_config.ui.default_avatar_file_url = f"{_public_prefix}/ai-circle-logo.jpg"
 chainlit_config.ui.avatar_size = 40
 chainlit_config.features.spontaneous_file_upload = None
 chainlit_config.features.unsafe_allow_html = True
@@ -193,26 +194,49 @@ async def rename_author(author: str) -> str:
 
 SHOW_STARTER_PROMPTS = os.environ.get("SHOW_STARTER_PROMPTS", "true").lower().strip() == "true"
 
+# Parse once at startup for both the Chainlit starters and the /starter-prompts endpoint
+_STARTER_ITEMS: list[dict] = []
+if SHOW_STARTER_PROMPTS:
+    _raw = os.environ.get("STARTER_PROMPTS", "").strip()
+    if _raw:
+        try:
+            _STARTER_ITEMS = [item for item in json.loads(_raw) if item.get("message")]
+        except json.JSONDecodeError:
+            logger.warning("[Chainlit] STARTER_PROMPTS is not valid JSON — skipping starters")
+
+# Expose /starter-prompts JSON endpoint for the JS card enhancer.
+# The JS in debug-accordion.js fetches this to get {label, message} pairs,
+# then renders .starter-card-title + .starter-card-desc inside each native button.
+# Must be inserted before the catch-all route so it's not swallowed by the SPA.
+from chainlit.server import app as _chainlit_app
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+async def _starter_prompts_endpoint(request):
+    return JSONResponse({
+        "prompts": [
+            {"label": item.get("label", item["message"]), "message": item["message"]}
+            for item in _STARTER_ITEMS
+        ]
+    })
+
+# Insert before the catch-all /{full_path:path} route
+_catchall_idx = next(
+    (i for i, r in enumerate(_chainlit_app.routes) if getattr(r, 'path', '') == '/{full_path:path}'),
+    len(_chainlit_app.routes)
+)
+_chainlit_app.routes.insert(_catchall_idx, Route("/starter-prompts", _starter_prompts_endpoint))
+
 
 @cl.set_starters
 async def set_starters():
     """Return starter prompts from `STARTER_PROMPTS` when enabled."""
-    if not SHOW_STARTER_PROMPTS:
+    if not _STARTER_ITEMS:
         return None
-    raw = os.environ.get("STARTER_PROMPTS", "").strip()
-    if not raw:
-        return None
-    try:
-        items = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("[Chainlit] STARTER_PROMPTS is not valid JSON — skipping starters")
-        return None
-    if not items:
-        return None
+    # Use the short label so the JS enhancer can match and split into title + desc
     return [
         cl.Starter(label=item.get("label", item["message"]), message=item["message"])
-        for item in items
-        if item.get("message")
+        for item in _STARTER_ITEMS
     ]
 
 
