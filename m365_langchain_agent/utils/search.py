@@ -61,6 +61,7 @@ class AzureSearchClient:
         )
         self.semantic_config = os.environ.get("AZURE_SEARCH_SEMANTIC_CONFIG_NAME", "")
         self.vector_field = os.environ.get("AZURE_SEARCH_EMBEDDING_FIELD", "content_vector")
+        self.exhaustive_knn = os.environ.get("SEARCH_EXHAUSTIVE_KNN", "false").lower() == "true"
 
     def search(self, query: str, top_k: int = 5, filter_expr: str = None, semantic_query: str = None) -> List[Dict]:
         """Hybrid search: keyword + vector + semantic ranking.
@@ -89,11 +90,13 @@ class AzureSearchClient:
 
         query_vector = self.embeddings.embed_query(query)
 
-        # SDK 11.7.0b2 uses `k`; the REST API calls it `k_nearest_neighbors`
+        # SDK 11.7.0b2 uses `k`; the REST API calls it `k_nearest_neighbors`.
+        # exhaustive=True switches from approximate HNSW to exact KNN.
         vector_query = VectorizedQuery(
             vector=query_vector,
             k=retrieval_k,
             fields=self.vector_field,
+            exhaustive=True if self.exhaustive_knn else None,
         )
 
         search_kwargs = dict(
