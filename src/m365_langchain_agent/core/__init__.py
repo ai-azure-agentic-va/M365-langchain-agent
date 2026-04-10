@@ -1,1 +1,1 @@
-"""Core domain logic — RAG agent, search, STTM, prompts."""
+"""Core domain logic — RAG agent, search, prompts."""

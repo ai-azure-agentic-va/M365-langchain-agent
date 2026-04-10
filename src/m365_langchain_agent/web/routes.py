@@ -194,7 +194,7 @@ async def auth_signed_out():
         content=(
             "<html><body style='font-family: Inter, Arial, sans-serif; padding: 32px;'>"
             "<h1>Signed out</h1>"
-            "<p>You have been signed out of the ETS Virtual Assistant.</p>"
+            f"<p>You have been signed out of the {settings.app_display_name}.</p>"
             "<p style='color: #667085;'>Redirecting to sign in page in <span id='countdown'>2</span> seconds...</p>"
             "<script>"
             "try { localStorage.clear(); } catch (e) {}"

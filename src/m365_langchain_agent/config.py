@@ -1,18 +1,62 @@
 """Centralized configuration — validated at startup, not on first request.
 
-All environment variables are defined here. A missing required variable
-crashes the process immediately on import, before any user request arrives.
+Configuration sources (in priority order):
+  1. Azure Key Vault — secrets (client_secret, bot_password, session_secret)
+     are resolved from Key Vault when KEYVAULT_URL is set.
+  2. Environment variables / .env file — all settings read via Pydantic BaseSettings.
+  3. Defaults — sensible defaults for non-required fields.
+
+A missing required variable crashes the process immediately on import,
+before any user request arrives.
 """
 
+import logging
 import os
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger(__name__)
+
+# Shared credential — single instance across all Azure SDK clients.
+# Initialized before Settings so Key Vault resolution can use it.
+credential = DefaultAzureCredential()
+token_provider = get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")
+
+
+# ---------------------------------------------------------------------------
+# Key Vault secret mapping
+# ---------------------------------------------------------------------------
+# Maps Key Vault secret name env var -> settings attribute to override.
+# Format: (kv_secret_name_attr, target_attr)
+# When KEYVAULT_URL is configured, each entry tries to fetch the secret
+# from Key Vault and overrides the target field if successful.
+_KV_SECRET_MAP: list[tuple[str, str]] = [
+    ("entra_client_secret_name", "entra_client_secret"),
+    ("bot_app_password_name", "bot_app_password"),
+    ("session_secret_name", "session_secret"),
+]
+
+
+def _resolve_from_keyvault(vault_url: str, secret_name: str) -> str | None:
+    """Fetch a single secret from Azure Key Vault. Returns None on failure."""
+    try:
+        from azure.keyvault.secrets import SecretClient
+
+        client = SecretClient(vault_url=vault_url, credential=credential)
+        secret = client.get_secret(secret_name)
+        if secret and secret.value:
+            logger.info("Resolved secret '%s' from Key Vault", secret_name)
+            return secret.value
+        logger.warning("Secret '%s' exists in Key Vault but has no value", secret_name)
+    except Exception as e:
+        logger.warning("Key Vault lookup failed for '%s': %s", secret_name, e)
+    return None
 
 
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
+    """Application settings — env vars + Key Vault for secrets."""
 
     # --- App ---
     port: int = 8080
@@ -44,15 +88,15 @@ class Settings(BaseSettings):
 
     # --- Bot Framework ---
     bot_app_id: str = ""
-    bot_app_password: str = ""
+    bot_app_password: str = ""       # Secret: resolved from Key Vault via bot_app_password_name
     bot_auth_tenant: str = ""
 
     # --- Entra ID SSO ---
     entra_tenant_id: str = ""
     entra_client_id: str = ""
-    entra_client_secret: str = ""
+    entra_client_secret: str = ""    # Secret: resolved from Key Vault via entra_client_secret_name
     entra_redirect_uri: str = ""
-    session_secret: str = ""
+    session_secret: str = ""         # Secret: resolved from Key Vault via session_secret_name
     ai_va_admins_group_id: str = ""
     enable_sso: bool = True
     session_max_age: int = 28800
@@ -60,8 +104,13 @@ class Settings(BaseSettings):
     chainlit_auth_cookie_name: str = "access_token"
 
     # --- Key Vault ---
+    # When keyvault_url is set, secrets are fetched from Key Vault.
+    # The *_name fields reference the secret names stored in Key Vault.
+    # If Key Vault is unavailable, falls back to the direct env var values above.
     keyvault_url: str = ""
     entra_client_secret_name: str = ""
+    bot_app_password_name: str = ""
+    session_secret_name: str = ""
 
     # --- Agent ---
     default_top_k: int = 5
@@ -71,6 +120,7 @@ class Settings(BaseSettings):
     sttm_system_prompt_override: str = ""
 
     # --- UI ---
+    app_display_name: str = "ETS VA Assistant"
     show_chat_settings: bool = True
     show_debug_panels: bool = False
     show_suggested_prompts: bool = True
@@ -78,6 +128,10 @@ class Settings(BaseSettings):
     starter_prompts: str = ""
     disable_data_layer: bool = False
     chainlit_public_prefix: str = "/public"
+    greeting_words: str = "hello,hi,hey,greetings,good morning,good afternoon,good evening,howdy,hola"
+    greeting_response: str = "Hello! I'm the **ETS Virtual Assistant**. How can I help you today?"
+    thanks_words: str = "thank you,thanks,thankyou,ty,thx"
+    thanks_response: str = "You're welcome! If you have any other questions, feel free to ask."
 
     # --- Scaling ---
     llm_request_timeout: int = 60
@@ -92,6 +146,28 @@ class Settings(BaseSettings):
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 
+    @model_validator(mode="after")
+    def _resolve_secrets_from_keyvault(self) -> "Settings":
+        """After loading env vars, override secret fields from Key Vault.
+
+        Priority: Key Vault > env var > default.
+        Only runs when keyvault_url is configured. If Key Vault is
+        unreachable, the env var fallback is kept silently.
+        """
+        if not self.keyvault_url:
+            return self
+
+        logger.info("Key Vault configured (%s) — resolving secrets", self.keyvault_url)
+        for kv_name_attr, target_attr in _KV_SECRET_MAP:
+            secret_name = getattr(self, kv_name_attr, "")
+            if not secret_name:
+                continue
+            value = _resolve_from_keyvault(self.keyvault_url, secret_name)
+            if value:
+                object.__setattr__(self, target_attr, value)
+
+        return self
+
     @property
     def session_cookie_secure(self) -> bool:
         return self.entra_redirect_uri.startswith("https://")
@@ -100,15 +176,7 @@ class Settings(BaseSettings):
     def available_models_list(self) -> list[str]:
         if self.azure_openai_available_models.strip():
             return [m.strip() for m in self.azure_openai_available_models.split(",") if m.strip()]
-        defaults = [self.azure_openai_deployment_name]
-        for m in ["gpt-4.1", "gpt-4.1-mini", "o3-mini"]:
-            if m not in defaults:
-                defaults.append(m)
-        return defaults
+        return [self.azure_openai_deployment_name]
 
 
 settings = Settings()
-
-# Shared credential — single instance across all Azure SDK clients
-credential = DefaultAzureCredential()
-token_provider = get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")

@@ -9,6 +9,7 @@ import logging
 from botbuilder.core import ActivityHandler, TurnContext
 from botbuilder.schema import Activity, ActivityTypes
 
+from m365_langchain_agent.config import settings
 from m365_langchain_agent.core.agent import invoke_agent, format_sources_markdown
 from m365_langchain_agent.cosmos import get_cosmos_store
 
@@ -75,7 +76,7 @@ class DocAgentBot(ActivityHandler):
         for member in members_added:
             if member.id != turn_context.activity.recipient.id:
                 welcome = (
-                    "Hello! I'm the **ETS VA Assistant**. Ask me questions about "
+                    f"Hello! I'm the **{settings.app_display_name}**. Ask me questions about "
                     "internal policies, procedures, and documentation. "
                     "I'll search the knowledge base and provide answers with "
                     "**clickable source links** and citations."

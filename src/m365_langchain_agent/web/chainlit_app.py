@@ -20,14 +20,13 @@ from chainlit.user import User
 from m365_langchain_agent.config import settings
 from m365_langchain_agent.core.agent import invoke_agent_stream, generate_suggested_prompts
 from m365_langchain_agent.core.prompts import SYSTEM_PROMPT
-from m365_langchain_agent.core.sttm import _STTM_KEYWORDS
 from m365_langchain_agent.cosmos import get_cosmos_store
 from m365_langchain_agent.web.data_layer import CosmosDataLayer
 
 logger = logging.getLogger(__name__)
 
 # Chainlit UI config
-chainlit_config.ui.name = "ETS VA Assistant"
+chainlit_config.ui.name = settings.app_display_name
 chainlit_config.ui.default_theme = "light"
 _public_prefix = settings.chainlit_public_prefix
 chainlit_config.ui.logo_file_url = f"{_public_prefix}/ai-circle-logo.jpg"
@@ -39,49 +38,17 @@ chainlit_config.features.edit_message = False
 chainlit_config.ui.custom_css = "/public/custom.css?v=4"
 chainlit_config.ui.custom_js = "/public/debug-accordion.js?v=4"
 
-_GREETING_WORDS = {"hello", "hi", "hey", "greetings", "good morning", "good afternoon", "good evening", "howdy", "hola"}
-_GREETING_RESPONSE = "Hello! I'm the **ETS Virtual Assistant**. How can I help you today?"
-_THANKS_WORDS = {"thank you", "thanks", "thankyou", "ty", "thx"}
-_THANKS_RESPONSE = "You're welcome! If you have any other questions, feel free to ask."
+# Parse greeting / thanks words from env-var config (comma-separated)
+_GREETING_WORDS = {w.strip().lower() for w in settings.greeting_words.split(",") if w.strip()}
+_THANKS_WORDS = {w.strip().lower() for w in settings.thanks_words.split(",") if w.strip()}
 
-_COMPARISON_KEYWORDS = frozenset({
-    "difference", "differences", "compare", "comparison", "vs", "versus",
-    "distinguish", "contrast", "differ", "similar", "similarities",
-})
-
-_REASONING_TEMPLATES: dict[str, dict] = {
-    "comparison": {
-        "intent":       "Understanding your comparison request",
-        "strategy":     "Determining approach — comparing across sources",
-        "retrieval":    "Reviewing {n} retrieved documents",
-        "reasoning":    "Identifying key differences and similarities",
-        "answer_prep":  "Preparing a structured comparison",
-    },
-    "sttm": {
-        "intent":       "Understanding your data lineage question",
-        "strategy":     "Determining approach — tracing field mappings across layers",
-        "retrieval":    "Reviewing {n} retrieved mappings",
-        "reasoning":    "Identifying transformation logic and hop-by-hop lineage",
-        "answer_prep":  "Preparing end-to-end lineage summary",
-    },
-    "general": {
-        "intent":       "Understanding your question",
-        "strategy":     "Determining approach — searching knowledge base",
-        "retrieval":    "Reviewing {n} retrieved documents",
-        "reasoning":    "Identifying key insights from retrieved information",
-        "answer_prep":  "Preparing a comprehensive answer",
-    },
+_REASONING_TEMPLATE: dict[str, str] = {
+    "intent":       "Understanding your question",
+    "strategy":     "Determining approach — searching knowledge base",
+    "retrieval":    "Reviewing {n} retrieved documents",
+    "reasoning":    "Identifying key insights from retrieved information",
+    "answer_prep":  "Preparing a comprehensive answer",
 }
-
-
-def _classify_query(query: str) -> str:
-    q = query.lower()
-    if any(kw in q for kw in _STTM_KEYWORDS):
-        return "sttm"
-    words = set(q.split())
-    if words & _COMPARISON_KEYWORDS:
-        return "comparison"
-    return "general"
 
 
 def _render_event(evt: dict, template: dict) -> list[tuple[str, str]] | None:
@@ -147,7 +114,7 @@ def header_auth_callback(headers: dict) -> User:
 @cl.author_rename
 async def rename_author(author: str) -> str:
     if author == "assistant":
-        return "ETS VA Assistant"
+        return settings.app_display_name
     return author
 
 
@@ -296,10 +263,10 @@ async def on_message(message: cl.Message):
 
     normalized = user_text.strip().lower().rstrip("!.,?")
     if normalized in _GREETING_WORDS:
-        await cl.Message(content=_GREETING_RESPONSE, author="assistant").send()
+        await cl.Message(content=settings.greeting_response, author="assistant").send()
         return
     if normalized in _THANKS_WORDS:
-        await cl.Message(content=_THANKS_RESPONSE, author="assistant").send()
+        await cl.Message(content=settings.thanks_response, author="assistant").send()
         return
 
     chat_settings = cl.user_session.get("settings") or {}
@@ -331,7 +298,7 @@ async def on_message(message: cl.Message):
     query_rewritten = False
 
     trace_lines: list[tuple[str, str]] = []
-    reasoning_template = _REASONING_TEMPLATES[_classify_query(user_text)]
+    reasoning_template = _REASONING_TEMPLATE
     streaming_started = False
 
     trace_lines.append(("intent", f"… {reasoning_template['intent']}"))

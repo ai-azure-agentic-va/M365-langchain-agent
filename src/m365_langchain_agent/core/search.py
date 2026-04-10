@@ -67,8 +67,8 @@ class AsyncSearchClient:
             top_k: Number of results to return.
             filter_expr: OData filter expression.
             semantic_query: Optional original user intent for the semantic reranker.
-                When search_text is augmented (STTM hop terms, rewritten follow-ups,
-                retry refinements), pass the original query here so the reranker
+                When search_text is augmented (rewritten follow-ups, retry
+                refinements), pass the original query here so the reranker
                 scores against intent rather than the augmented text.
         """
         if not query or not query.strip():

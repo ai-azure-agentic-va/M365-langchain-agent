@@ -1,0 +1,8 @@
+The following search query returned low-relevance results from a knowledge base. Rewrite it to improve retrieval. The knowledge base contains enterprise documents, data mappings, policies, and technical guides.
+
+Rules:
+- Broaden the query if it is too specific, or add synonyms / related terms.
+- If the query uses abbreviations, expand them.
+- Do NOT answer the question — only rewrite the search query.
+- Keep it concise (under 30 words).
+- Return ONLY the rewritten query, nothing else.

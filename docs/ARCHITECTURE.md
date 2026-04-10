@@ -128,30 +128,35 @@ Every box is a separate system. Arrows show who initiates communication.
 │    │         m365-langchain-agent:<tag>                               │       │
 │    │                                                                 │       │
 │    │  ┌─────────────────────────────────────────────────────────┐    │       │
-│    │  │ FastAPI App (app.py)                                     │    │       │
+│    │  │ FastAPI App (web/app.py + web/routes.py)                 │    │       │
 │    │  │                                                          │    │       │
 │    │  │  POST /api/messages  ← Bot Framework Activity JSON       │    │       │
 │    │  │  GET  /health        ← liveness probe                     │    │       │
 │    │  │  GET  /readiness     ← readiness probe                    │    │       │
+│    │  │  POST /test/query    ← RAG test (no Bot auth)             │    │       │
+│    │  │  GET  /chat/*        ← Chainlit UI (when enabled)         │    │       │
+│    │  │  GET  /chat/auth/*   ← Entra ID SSO endpoints             │    │       │
 │    │  └──────────┬───────────────────────────────────────────────┘    │       │
 │    │             │                                                   │       │
 │    │             │ Deserializes Activity, invokes bot handler         │       │
 │    │             ▼                                                   │       │
 │    │  ┌──────────────────────┐    ┌──────────────────────────┐      │       │
-│    │  │ Bot Framework        │    │ LangChain RAG Agent      │      │       │
-│    │  │ Adapter + Handler    │───►│ (agent.py)               │      │       │
-│    │  │ (bot.py)             │    │                          │      │       │
-│    │  │                      │    │ 1. Search (AI Search)    │      │       │
-│    │  │ Validates auth       │    │ 2. Generate (LLM)        │      │       │
-│    │  │ Extracts user text   │    │ 3. Return cited answer   │      │       │
-│    │  │ Sends reply back     │    │                          │      │       │
+│    │  │ Bot Framework        │    │ RAG Agent Orchestrator   │      │       │
+│    │  │ Adapter + Handler    │───►│ (core/agent.py)          │      │       │
+│    │  │ (bot/adapter.py +    │    │                          │      │       │
+│    │  │  bot/handler.py)     │    │ 1. STTM detection        │      │       │
+│    │  │                      │    │ 2. Query rewrite          │      │       │
+│    │  │ MSI or App Password  │    │ 3. Search (AI Search)    │      │       │
+│    │  │ Validates auth       │    │ 4. Quality gate + retry  │      │       │
+│    │  │ Extracts user text   │    │ 5. Generate (LLM)        │      │       │
+│    │  │ Sends reply back     │    │ 6. Return cited answer   │      │       │
 │    │  └──────────┬───────────┘    └──────────────────────────┘      │       │
 │    │             │                                                   │       │
 │    │             │ Loads/saves conversation history                   │       │
 │    │             ▼                                                   │       │
 │    │  ┌──────────────────────┐                                      │       │
 │    │  │ CosmosDB Client      │                                      │       │
-│    │  │ (cosmos_store.py)    │                                      │       │
+│    │  │ (cosmos.py)          │                                      │       │
 │    │  │                      │                                      │       │
 │    │  │ get_history()        │                                      │       │
 │    │  │ save_turn()          │                                      │       │
@@ -211,26 +216,25 @@ Every box is a separate system. Arrows show who initiates communication.
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │                                                                     │     │
-│  │  app.py — FastAPI Application                                       │     │
-│  │  ════════════════════════════                                       │     │
+│  │  web/app.py — FastAPI Application Factory                           │     │
+│  │  ════════════════════════════════════════                           │     │
 │  │                                                                     │     │
 │  │  Responsibilities:                                                  │     │
-│  │    • HTTP server (uvicorn, port 8080)                               │     │
-│  │    • POST /api/messages — Bot Framework entry point                 │     │
-│  │    • GET /health, /readiness — health probes                        │     │
-│  │    • Initializes BotFrameworkAdapter with credentials                │     │
-│  │    • Global error handler (on_turn_error)                           │     │
+│  │    • create_app() factory with async lifespan                       │     │
+│  │    • Mounts Chainlit UI or Bot-only mode via USER_INTERFACE         │     │
+│  │    • Adds SSOAuthMiddleware when ENABLE_SSO=true                    │     │
+│  │    • Registers web/routes.py router (health, messages, test, auth)  │     │
 │  │                                                                     │     │
-│  │  Depends on: bot.py, botbuilder-core                                │     │
+│  │  Depends on: web/routes.py, web/chainlit_app.py, web/middleware.py  │     │
 │  │                                                                     │     │
 │  └──────────────────────────┬──────────────────────────────────────────┘     │
 │                             │                                                │
-│                             │ Deserializes Activity → calls bot.on_turn()    │
+│                             │ Routes POST /api/messages → adapter → bot      │
 │                             ▼                                                │
 │  ┌─────────────────────────────────────────────────────────────────────┐     │
 │  │                                                                     │     │
-│  │  bot.py — DocAgentBot (ActivityHandler)                             │     │
-│  │  ══════════════════════════════════════                             │     │
+│  │  bot/handler.py — DocAgentBot (ActivityHandler)                     │     │
+│  │  ══════════════════════════════════════════════                     │     │
 │  │                                                                     │     │
 │  │  Responsibilities:                                                  │     │
 │  │    • on_message_activity() — main message handler                   │     │
@@ -238,7 +242,7 @@ Every box is a separate system. Arrows show who initiates communication.
 │  │    • Sends typing indicator while processing                        │     │
 │  │    • Orchestrates: load history → invoke agent → save turn → reply  │     │
 │  │                                                                     │     │
-│  │  Depends on: agent.py, cosmos_store.py                              │     │
+│  │  Depends on: core/agent.py, cosmos.py, bot/adapter.py               │     │
 │  │                                                                     │     │
 │  └───────┬───────────────────────────────┬─────────────────────────────┘     │
 │          │                               │                                   │
@@ -246,53 +250,56 @@ Every box is a separate system. Arrows show who initiates communication.
 │          ▼                               ▼                                   │
 │  ┌─────────────────────────┐   ┌──────────────────────────────┐             │
 │  │                         │   │                              │             │
-│  │  agent.py               │   │  cosmos_store.py             │             │
-│  │  LangChain RAG Agent    │   │  CosmosConversationStore     │             │
+│  │  core/agent.py          │   │  cosmos.py                   │             │
+│  │  RAG Agent Orchestrator │   │  CosmosConversationStore     │             │
 │  │  ═══════════════════    │   │  ════════════════════════    │             │
 │  │                         │   │                              │             │
 │  │  invoke_agent():        │   │  get_history():              │             │
-│  │   1. Search docs        │   │   Read conversation from     │             │
-│  │   2. Build context      │   │   CosmosDB by conversation_  │             │
-│  │   3. Build messages     │   │   id (partition key)         │             │
-│  │      (system + history  │   │                              │             │
-│  │       + current query)  │   │  save_turn():                │             │
-│  │   4. Call LLM           │   │   Append user+bot messages   │             │
-│  │   5. Append sources     │   │   to conversation doc        │             │
-│  │   6. Return answer      │   │   (max N msgs, TTL-based)    │             │
+│  │   1. Detect STTM query  │   │   Read conversation from     │             │
+│  │   2. Rewrite query      │   │   CosmosDB by conversation_  │             │
+│  │   3. Search docs        │   │   id (partition key)         │             │
+│  │   4. Quality gate       │   │                              │             │
+│  │   5. Build context      │   │  save_turn():                │             │
+│  │   6. Call LLM           │   │   Append user+bot messages   │             │
+│  │   7. Filter citations   │   │   to conversation doc        │             │
+│  │   8. Return result      │   │   (max N msgs, TTL-based)    │             │
 │  │                         │   │                              │             │
-│  │  Depends on:            │   │  Depends on:                 │             │
-│  │   search.py,            │   │   azure-cosmos SDK           │             │
-│  │   langchain-openai      │   │                              │             │
+│  │  invoke_agent_stream(): │   │  Depends on:                 │             │
+│  │   Streaming variant     │   │   azure-cosmos SDK           │             │
+│  │   yields tokens + meta  │   │                              │             │
 │  │                         │   │  Connects to:                │             │
 │  └──────────┬──────────────┘   │   Azure CosmosDB             │             │
-│             │                  │   (HTTPS, API key auth)       │             │
+│             │                  │   (HTTPS, Managed Identity)   │             │
 │             │                  │                              │             │
 │             │                  └──────────────────────────────┘             │
 │             │                                                               │
-│             │ search(query, top_k=5)                                        │
+│             │ search(query, top_k, semantic_query)                           │
 │             ▼                                                               │
 │  ┌──────────────────────────────────────────────────┐                       │
 │  │                                                  │                       │
-│  │  utils/search.py — AzureSearchClient             │                       │
-│  │  ═══════════════════════════════════             │                       │
+│  │  core/search.py — AsyncSearchClient              │                       │
+│  │  ════════════════════════════════════             │                       │
 │  │                                                  │                       │
-│  │  Singleton via get_search_client()               │                       │
+│  │  Async singleton via get_search_client()         │                       │
 │  │                                                  │                       │
-│  │  search(query, top_k):                           │                       │
-│  │   1. Embed query → vector                        │                       │
-│  │      (embedding model via Azure OpenAI)          │                       │
-│  │   2. Send to Azure AI Search:                    │                       │
-│  │      • search_text = query (keyword)             │                       │
-│  │      • vector_queries = [VectorizedQuery]        │                       │
-│  │      • query_type = "semantic"                   │                       │
-│  │      • semantic_configuration from env           │                       │
-│  │   3. Parse results → list of dicts:              │                       │
-│  │      {content, score, reranker_score,            │                       │
-│  │       document_title, source_url, ...}           │                       │
+│  │  search(query, top_k, filter_expr,               │                       │
+│  │         semantic_query):                          │                       │
+│  │   1. Embed query → 3072d vector                  │                       │
+│  │      (text-embedding-3-large via Azure OpenAI)   │                       │
+│  │   2. Hybrid search on Azure AI Search:           │                       │
+│  │      • search_text = query (keyword / BM25)      │                       │
+│  │      • vector_queries = [VectorizedQuery]         │                       │
+│  │      • query_type = "semantic" (reranker)         │                       │
+│  │      • semantic_query = original intent           │                       │
+│  │      • exhaustive_knn = optional exact KNN        │                       │
+│  │   3. Parse results → list of dicts                │                       │
+│  │                                                  │                       │
+│  │  search_document_names(query):                   │                       │
+│  │   Facet-based lightweight doc name discovery      │                       │
 │  │                                                  │                       │
 │  │  Connects to:                                    │                       │
-│  │   Azure AI Search (HTTPS, API key auth)          │                       │
-│  │   Azure OpenAI embeddings (HTTPS, API key auth)  │                       │
+│  │   Azure AI Search (HTTPS, Managed Identity)      │                       │
+│  │   Azure OpenAI embeddings (HTTPS, MSI token)     │                       │
 │  │                                                  │                       │
 │  └──────────────────────────────────────────────────┘                       │
 │                                                                              │
@@ -404,18 +411,19 @@ Every box is a separate system. Arrows show who initiates communication.
 | 2 | Teams | Sends to Bot Service | Internal | Activity JSON with type=message |
 | 3 | Bot Service | Forwards to endpoint | HTTPS POST `/api/messages` | Adds JWT auth header |
 | 4 | Container Apps Ingress | TLS termination | HTTPS → HTTP | Forwards to container port 8080 |
-| 5 | app.py | Deserializes Activity | In-process | BotFrameworkAdapter.process_activity() |
-| 6 | bot.py | Validates, extracts text | In-process | on_message_activity() |
-| 7 | cosmos_store.py | Loads conversation history | HTTPS → CosmosDB | get_history(conversation_id) |
-| 8 | agent.py | Embeds query | HTTPS → Azure OpenAI | Embedding model → vector |
-| 9 | search.py | Hybrid search | HTTPS → Azure AI Search | keyword + vector + semantic reranking, top 5 |
-| 10 | agent.py | Builds prompt | In-process | System prompt + history + docs + question |
-| 11 | agent.py | Generates answer | HTTPS → Azure OpenAI | LLM model, temperature=0.2 |
-| 12 | agent.py | Appends source citations | In-process | [1] title, [2] title... |
-| 13 | cosmos_store.py | Saves turn | HTTPS → CosmosDB | save_turn(conversation_id, user_msg, bot_msg) |
-| 14 | bot.py | Sends reply | HTTPS → Bot Service | Via serviceUrl callback in Activity |
-| 15 | Bot Service | Routes to Teams | Internal | Activity response rendered as chat message |
-| 16 | Employee | Sees answer | Teams UI | Grounded answer with [1], [2] citations |
+| 5 | web/routes.py | Deserializes Activity | In-process | adapter.process_activity() via bot/adapter.py |
+| 6 | bot/handler.py | Validates, extracts text | In-process | DocAgentBot.on_message_activity() |
+| 7 | cosmos.py | Loads conversation history | HTTPS → CosmosDB | get_history(conversation_id) |
+| 8 | core/agent.py | Detects STTM, rewrites query | In-process | "sttm" in query check + _rewrite_query_with_history() |
+| 9 | core/search.py | Embeds + hybrid search | HTTPS → Azure OpenAI + AI Search | keyword + 3072d vector + semantic reranking |
+| 10 | core/agent.py | Quality gate + optional retry | In-process / HTTPS | Checks retrieval_score_threshold, refines query if needed |
+| 11 | core/agent.py | Builds prompt + context | In-process | System prompt + history + formatted docs + question |
+| 12 | core/agent.py | Generates answer | HTTPS → Azure OpenAI | LLM model, configurable temperature |
+| 13 | core/agent.py | Filters cited sources | In-process | Matches [1], [2] citation indices to source list |
+| 14 | cosmos.py | Saves turn | HTTPS → CosmosDB | save_turn(conversation_id, user_msg, bot_msg) |
+| 15 | bot/handler.py | Sends reply | HTTPS → Bot Service | Via serviceUrl callback in Activity |
+| 16 | Bot Service | Routes to Teams | Internal | Activity response rendered as chat message |
+| 17 | Employee | Sees answer | Teams UI | Grounded answer with [1], [2] citations |
 
 ---
 
@@ -608,7 +616,7 @@ The `botbuilder-python` SDK does not natively support `UserAssignedMSI`. The SDK
 `BotFrameworkAdapter` always creates `MicrosoftAppCredentials` (which requires `client_secret`)
 for outbound calls via a name-mangled private method `__get_app_credentials`.
 
-The application includes `MsiBotFrameworkAdapter` (in `app.py`) that:
+The application includes `MsiBotFrameworkAdapter` (in `bot/adapter.py`) that:
 1. Subclasses `BotFrameworkAdapter`
 2. Monkey-patches `_BotFrameworkAdapter__get_app_credentials` in `__init__`
 3. Returns `MsiAppCredentials` instead of `MicrosoftAppCredentials`
@@ -728,6 +736,123 @@ drops the request. The container logs will show zero inbound POST requests.
 - `.env` files used only for local development (gitignored)
 - Container runs as non-root user (Python slim base image)
 
+### ⑤ Entra ID SSO — Chainlit UI Authentication
+
+When `USER_INTERFACE=CHAINLIT_UI` and `ENABLE_SSO=true`, the Chainlit web UI is protected
+by Microsoft Entra ID (Azure AD) Single Sign-On using the **OIDC Authorization Code Flow**.
+
+**Components:**
+
+| Module | Role |
+|--------|------|
+| `web/auth.py` | MSAL client, session cookie signing, login/callback/logout handlers |
+| `web/middleware.py` | `SSOAuthMiddleware` — enforces auth on `/chat/` routes |
+| `web/routes.py` | Registers `/chat/auth/*` endpoints on the FastAPI router |
+
+**Authentication flow:**
+
+```
+Browser                 Agent (/chat/auth/*)            Entra ID (Azure AD)
+  │                           │                              │
+  │  1. GET /chat/            │                              │
+  │──────────────────────────►│                              │
+  │                           │                              │
+  │  2. SSOAuthMiddleware:    │                              │
+  │     No session cookie     │                              │
+  │     → Redirect to login   │                              │
+  │◄──────────────────────────│                              │
+  │                           │                              │
+  │  3. GET /chat/auth/login  │                              │
+  │──────────────────────────►│                              │
+  │                           │  4. build_auth_url()         │
+  │                           │     MSAL get_authorization_  │
+  │                           │     request_url()            │
+  │                           │                              │
+  │  5. 302 → Entra ID /authorize                            │
+  │─────────────────────────────────────────────────────────►│
+  │                           │                              │
+  │  6. User signs in (Entra login page)                     │
+  │     (MFA if configured)   │                              │
+  │                           │                              │
+  │  7. 302 → /chat/auth/callback?code=<auth_code>&state=   │
+  │◄─────────────────────────────────────────────────────────│
+  │                           │                              │
+  │  8. GET /chat/auth/callback                              │
+  │──────────────────────────►│                              │
+  │                           │  9. Validate state cookie    │
+  │                           │  10. MSAL acquire_token_by_  │
+  │                           │      authorization_code()     │
+  │                           │─────────────────────────────►│
+  │                           │     id_token + access_token   │
+  │                           │◄─────────────────────────────│
+  │                           │                              │
+  │                           │  11. Extract claims:         │
+  │                           │      oid, name, email, groups │
+  │                           │                              │
+  │                           │  12. Create signed session   │
+  │                           │      cookie (itsdangerous)   │
+  │                           │                              │
+  │  13. 302 → /chat/         │                              │
+  │      Set-Cookie:          │                              │
+  │        m365_sso_session   │                              │
+  │◄──────────────────────────│                              │
+  │                           │                              │
+  │  14. Subsequent requests: │                              │
+  │      Cookie present →     │                              │
+  │      SSOAuthMiddleware    │                              │
+  │      injects x-user-*     │                              │
+  │      headers → Chainlit   │                              │
+  │      reads via            │                              │
+  │      header_auth_callback │                              │
+```
+
+**Session management:**
+
+| Setting | Purpose | Default |
+|---------|---------|---------|
+| `SESSION_SECRET` | Key for signing session cookies (itsdangerous) | Required (from Key Vault) |
+| `SESSION_IDLE_TIMEOUT` | Max age of session cookie (seconds) | 28800 (8 hours) |
+| `SESSION_COOKIE_SECURE` | Require HTTPS for cookies | `true` in production |
+
+**Role-based access:**
+
+The middleware extracts `groups` from the Entra ID token claims and compares against
+configured security group IDs. Users in the `AI_VA_ADMINS_GROUP_ID` group receive
+the `admin` role; all other authenticated users receive `user`.
+
+```
+id_token claims → { oid, name, email, groups: ["<group-id-1>", "<group-id-2>"] }
+                                          │
+                                          ▼
+                               AI_VA_ADMINS_GROUP_ID in groups?
+                                    │               │
+                                   Yes              No
+                                    │               │
+                                    ▼               ▼
+                              role = "admin"   role = "user"
+```
+
+**Middleware passthrough rules:**
+
+The `SSOAuthMiddleware` does NOT require authentication for:
+- `/chat/auth/*` — login, callback, logout endpoints
+- `/chat/ws/*` — Chainlit WebSocket connections (authenticated via headers)
+- `/chat/project/*` — Chainlit project metadata
+- `/chat/public/*` — Static assets (CSS, JS, images)
+- `/chat/favicon*` — Favicon
+- `/chat/files/*` — Uploaded files
+
+**Entra ID prerequisites:**
+
+| Requirement | Owner | Status |
+|-------------|-------|--------|
+| App Registration (client ID + secret) | Entra ID Admin | Required |
+| Redirect URI: `https://<fqdn>/chat/auth/callback` | Entra ID Admin | Required |
+| Security Group: `AI-VA-Users` | Entra ID Admin | Required |
+| Security Group: `AI-VA-Admins` | Entra ID Admin | Optional |
+| `groups` claim in token | App Registration manifest | Required |
+| API permission: `User.Read` | App Registration | Required |
+
 ### Production Hardening Checklist
 
 | Item | Current State | Production Recommendation |
@@ -798,5 +923,369 @@ See [.env.example](.env.example) for the complete list of required variables.
 | Azure AI Search | `AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_INDEX_NAME` (auth via Managed Identity) |
 | CosmosDB | `AZURE_COSMOS_ENDPOINT`, `AZURE_COSMOS_DATABASE` (auth via Managed Identity) |
 | Bot Framework | `BOT_APP_ID`, `BOT_APP_PASSWORD` |
+| Entra ID SSO | `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET` (from Key Vault) |
+| Session | `SESSION_SECRET` (from Key Vault), `SESSION_IDLE_TIMEOUT`, `SESSION_COOKIE_SECURE` |
+| Key Vault | `KEYVAULT_URL`, secret name fields for runtime resolution |
 | LangSmith | `LANGSMITH_API_KEY`, `LANGCHAIN_TRACING_V2` |
-| Foundry | `AZURE_FOUNDRY_ENDPOINT`, `AZURE_FOUNDRY_SUBSCRIPTION_ID` |
+| UI Mode | `USER_INTERFACE` (`CHAINLIT_UI` or `BOT_SERVICE`), `ENABLE_SSO` |
+
+---
+
+## API Documentation
+
+All HTTP endpoints served by the FastAPI application. The server listens on port 8080.
+
+### Core Endpoints
+
+| Method | Path | Auth | Module | Purpose |
+|--------|------|------|--------|---------|
+| `POST` | `/api/messages` | Bot Framework JWT | `web/routes.py` | Bot Framework messaging — receives Activity JSON from Azure Bot Service |
+| `GET` | `/health` | None | `web/routes.py` | Liveness probe — returns `{"status": "healthy"}` |
+| `GET` | `/readiness` | None | `web/routes.py` | Readiness probe — returns `{"status": "ready"}` |
+| `GET` | `/sso-status` | None | `web/routes.py` | Reports whether SSO is enabled: `{"enabled": true/false}` |
+| `GET` | `/starter-prompts` | None | `web/routes.py` | Returns starter prompt cards as JSON for UI consumption |
+| `POST` | `/test/query` | None | `web/routes.py` | Test endpoint — invokes the full RAG pipeline without Bot Framework auth |
+| `GET` | `/` | None | `web/app.py` | Root — redirects to `/chat/` (CHAINLIT_UI) or returns service info (BOT_SERVICE) |
+
+### SSO Authentication Endpoints (Chainlit UI mode)
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| `GET` | `/chat/auth/login` | None | Initiates OIDC Authorization Code Flow — redirects to Entra ID |
+| `GET` | `/chat/auth/callback` | None | Handles OAuth callback — exchanges code for tokens, sets session cookie |
+| `GET` | `/chat/auth/logout` | Session cookie | Clears cookies, redirects to Entra ID logout |
+| `GET` | `/chat/auth/signed-out` | None | Post-logout landing page with auto-redirect to login |
+| `GET` | `/chat/auth/error` | None | Displays authentication error with retry link |
+
+### Chainlit UI Routes (mounted sub-application)
+
+| Path | Purpose |
+|------|---------|
+| `/chat/` | Chainlit web chat UI (main page) |
+| `/chat/ws/*` | Chainlit WebSocket connections |
+| `/chat/project/*` | Chainlit project metadata |
+| `/chat/public/*` | Static assets (CSS, JS, images) |
+| `/chat/files/*` | File uploads |
+
+### Endpoint Details
+
+#### `POST /api/messages`
+
+Receives Bot Framework Activity JSON from Azure Bot Service. Validates the JWT in the
+`Authorization` header via `BotFrameworkAdapter`, then routes to `DocAgentBot.on_turn()`.
+
+```
+Request:
+  Headers:
+    Authorization: Bearer <jwt>
+    Content-Type: application/json
+  Body: Bot Framework Activity JSON
+    {
+      "type": "message",
+      "text": "What is the VPN policy?",
+      "from": { "id": "...", "aadObjectId": "..." },
+      "conversation": { "id": "..." },
+      "serviceUrl": "https://smba.trafficmanager.net/...",
+      ...
+    }
+
+Response:
+  201 Created (success, no body)
+  401 Unauthorized (invalid JWT)
+  415 Unsupported Media Type (non-JSON content type)
+  500 Internal Server Error
+```
+
+#### `POST /test/query`
+
+Bypasses Bot Framework auth — invokes the RAG pipeline directly for testing and debugging.
+
+```
+Request:
+  Content-Type: application/json
+  Body:
+    {
+      "query": "What is the VPN policy?",
+      "conversation_id": "test-session",   // optional
+      "model": "gpt-4.1",                  // optional — override deployment
+      "top_k": 5,                          // optional — override chunk count
+      "temperature": 0.2,                  // optional — override LLM temperature
+      "filter": "source_type eq 'wiki'"    // optional — OData filter
+    }
+
+Response (200 OK):
+    {
+      "query": "What is the VPN policy?",
+      "conversation_id": "test-session",
+      "steps": {
+        "cosmos_read": { "status": "ok", "history_length": 0 },
+        "agent": { "status": "ok", "answer_length": 512, "source_count": 3 },
+        "cosmos_write": { "status": "ok" }
+      },
+      "answer": "Based on the documentation [1]...",
+      "sources": [ { "index": 1, "title": "VPN Policy", "url": "..." } ],
+      "raw_chunks": [ ... ]
+    }
+```
+
+#### `GET /starter-prompts`
+
+Returns configured starter prompt cards for the Chainlit UI.
+
+```
+Response (200 OK):
+    {
+      "prompts": [
+        { "label": "How do I connect to VPN?", "message": "How do I connect to VPN?" },
+        { "label": "Release schedule", "message": "What is the current release schedule?" }
+      ]
+    }
+```
+
+---
+
+## Agent Architecture
+
+### Current Design — Single RAG Agent with Specialized Detection
+
+The agent follows a **coordinator pattern**: a single orchestrator (`core/agent.py`) handles
+all queries, with specialized detection modules that adjust behavior without changing the
+search or generation pipeline.
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│  AGENT ARCHITECTURE — Current                                                │
+│                                                                              │
+│  ┌───────────────────────────────────────────────────────────────────────┐   │
+│  │                                                                       │   │
+│  │  core/agent.py — RAG Orchestrator                                     │   │
+│  │                                                                       │   │
+│  │  ┌─────────────────────────────────────────────────────────────────┐  │   │
+│  │  │                                                                 │  │   │
+│  │  │  1. QUERY CLASSIFICATION                                        │  │   │
+│  │  │     ├── "sttm" in query? → STTM prompt + higher top_k          │  │   │
+│  │  │     └── Default: standard system prompt                         │  │   │
+│  │  │                                                                 │  │   │
+│  │  │  2. QUERY REWRITE (if conversation history exists)              │  │   │
+│  │  │     └── LLM call: rewrite follow-up into standalone query       │  │   │
+│  │  │                                                                 │  │   │
+│  │  │  3. SEARCH                                                      │  │   │
+│  │  │     └── core/search.py: hybrid (BM25 + vector + semantic)       │  │   │
+│  │  │                                                                 │  │   │
+│  │  │  4. QUALITY GATE                                                │  │   │
+│  │  │     ├── Check retrieval_score_threshold                         │  │   │
+│  │  │     ├── If below: refine query → retry search                   │  │   │
+│  │  │     └── If still below: return out-of-scope answer              │  │   │
+│  │  │                                                                 │  │   │
+│  │  │  5. CONTEXT BUILDING                                            │  │   │
+│  │  │     ├── Format retrieved docs with [i] source headers           │  │   │
+│  │  │     ├── Extract logical paths from blob URLs                    │  │   │
+│  │  │     └── Multi-source synthesis hint when >1 unique document     │  │   │
+│  │  │                                                                 │  │   │
+│  │  │  6. GENERATION                                                  │  │   │
+│  │  │     ├── Build messages: system + history + context + query       │  │   │
+│  │  │     ├── LLM call (sync or streaming)                            │  │   │
+│  │  │     └── Filter cited sources from answer text                   │  │   │
+│  │  │                                                                 │  │   │
+│  │  │  7. POST-PROCESSING                                             │  │   │
+│  │  │     └── generate_suggested_prompts() — follow-up suggestions    │  │   │
+│  │  │                                                                 │  │   │
+│  │  └─────────────────────────────────────────────────────────────────┘  │   │
+│  │                                                                       │   │
+│  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  SUPPORTING MODULES                                                          │
+│  ─────────────────                                                           │
+│                                                                              │
+│  ┌──────────────────────────────┐  ┌──────────────────────────┐             │
+│  │ core/prompts.py             │  │ core/search.py           │             │
+│  │                             │  │                          │             │
+│  │ Loads prompts from .txt     │  │ AsyncSearchClient        │             │
+│  │ files with env var override │  │  search()                │             │
+│  │ (system, sttm_system,       │  │  search_document_names() │             │
+│  │  query_rewrite, etc.)       │  │                          │             │
+│  └──────────────────────────────┘  └──────────────────────────┘             │
+│                                                                              │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────────────┐     │
+│  │ config.py       │  │ key_vault.py    │  │ prompts/*.txt            │     │
+│  │                 │  │                 │  │                          │     │
+│  │ Pydantic        │  │ Key Vault       │  │ system.txt               │     │
+│  │ Settings with   │  │ secret          │  │ sttm_system.txt          │     │
+│  │ Key Vault       │  │ resolution      │  │ query_rewrite.txt        │     │
+│  │ resolution      │  │ (lazy client)   │  │ query_refine.txt         │     │
+│  │                 │  │                 │  │ suggested_prompts.txt    │     │
+│  └─────────────────┘  └─────────────────┘  └──────────────────────────┘     │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Agent Pipeline — Detailed Flow
+
+```
+User Query
+    │
+    ▼
+┌─────────────────────────┐
+│ 1. STTM Detection       │ ── "sttm" in query.lower()?
+│    Yes → STTM prompt,   │    Simple string match
+│           top_k bump     │    Prompt loaded from sttm_system.txt
+│    No  → default prompt  │
+└────────────┬────────────┘
+             ▼
+┌─────────────────────────┐
+│ 2. Query Rewrite        │ ── Has conversation_history?
+│    Yes → LLM rewrites   │    Last 4 turns → standalone query
+│          follow-up       │    e.g., "What about VPN?" → "What is the VPN policy?"
+│    No  → use as-is      │
+└────────────┬────────────┘
+             ▼
+┌─────────────────────────┐
+│ 3. Hybrid Search        │ ── core/search.py
+│    • BM25 keyword       │    Over-retrieves 3x, then reranks
+│    • 3072d vector       │    semantic_query = original intent
+│    • Semantic reranker   │    exhaustive_knn = optional
+│    • include_total_count │
+└────────────┬────────────┘
+             ▼
+┌─────────────────────────┐
+│ 4. Quality Gate         │ ── retrieval_score_threshold > 0?
+│    Score OK → proceed   │    Checks max(reranker_score, score)
+│    Score low:           │
+│      → Refine query     │    LLM generates refined search terms
+│      → Retry search     │    semantic_query = original intent
+│      → Still low →      │    Return OUT_OF_SCOPE_ANSWER
+│        out-of-scope     │
+└────────────┬────────────┘
+             ▼
+┌─────────────────────────┐
+│ 5. Build Context        │ ── _format_context()
+│    • [i] source headers │    Multi-source hint when >1 doc
+│    • Logical paths      │    _extract_logical_path() from blob URLs
+│    • Document names     │    search_document_names() via facets
+└────────────┬────────────┘
+             ▼
+┌─────────────────────────┐
+│ 6. LLM Generation       │ ── _build_llm() → AzureChatOpenAI
+│    system + history      │    Supports reasoning models (o3/o1)
+│    + context + query     │    token_provider (MSI, no API key)
+│    → cited answer        │
+└────────────┬────────────┘
+             ▼
+┌─────────────────────────┐
+│ 7. Source Citation       │ ── _filter_cited_sources()
+│    Parse [1], [2] refs   │    Only return sources actually cited
+│    from answer text      │    Deduplicate by file name
+└────────────┬────────────┘
+             ▼
+        AgentResult
+        { answer, sources, raw_chunks, full_prompt }
+```
+
+### Two Invocation Modes
+
+| Function | Use Case | Behavior |
+|----------|----------|----------|
+| `invoke_agent()` | Bot Framework (Teams/WebChat) | Returns complete `AgentResult` after full pipeline |
+| `invoke_agent_stream()` | Chainlit UI (browser) | Yields event dicts (progress), token strings (streaming), and final metadata dict |
+
+The streaming variant emits progress events that the Chainlit UI renders as a "thinking" accordion:
+
+| Event | Meaning |
+|-------|---------|
+| `rewriting_query` | Query rewrite started |
+| `query_rewritten` | Query rewrite complete |
+| `search_start` | Search initiated |
+| `search_complete` | Search results received |
+| `refining_search` | Quality gate triggered retry |
+| `retry_search_complete` | Retry search results received |
+| `generating` | LLM generation started |
+
+### Dual Interface Architecture
+
+The same agent core serves two completely different user interfaces via the `USER_INTERFACE` setting:
+
+```
+                    ┌──────────────────────────────────────────────┐
+                    │                                              │
+                    │         USER_INTERFACE selector               │
+                    │         (web/app.py create_app())             │
+                    │                                              │
+                    └───────────┬──────────────────┬───────────────┘
+                                │                  │
+                    ┌───────────▼──────┐  ┌───────▼──────────────┐
+                    │                  │  │                      │
+                    │  BOT_SERVICE     │  │  CHAINLIT_UI          │
+                    │                  │  │                      │
+                    │  • /api/messages │  │  • /chat/* (web UI)  │
+                    │  • /health       │  │  • /chat/auth/* (SSO)│
+                    │  • /readiness    │  │  • SSOAuthMiddleware │
+                    │                  │  │  • WebSocket streams │
+                    │  Bot Framework   │  │  • Debug panels      │
+                    │  Activity JSON   │  │  • Chat settings     │
+                    │  → invoke_agent()│  │  • Suggested prompts │
+                    │                  │  │  • invoke_agent_     │
+                    │                  │  │    stream()          │
+                    └────────┬─────────┘  └──────────┬───────────┘
+                             │                       │
+                             └───────────┬───────────┘
+                                         │
+                             ┌───────────▼───────────┐
+                             │                       │
+                             │   core/agent.py        │
+                             │   (shared RAG pipeline) │
+                             │                       │
+                             └───────────────────────┘
+```
+
+### Future — Coordinator + Sub-Agent Expansion
+
+The current single-agent design is structured for expansion into a multi-agent coordinator
+pattern. The pipeline stages (classification → search → generate) map cleanly to specialized
+sub-agents:
+
+```
+                    ┌──────────────────────────────────────────────┐
+                    │                                              │
+                    │          core/orchestrator.py                 │
+                    │          (Future Coordinator Agent)           │
+                    │                                              │
+                    │  Receives user query + context               │
+                    │  Classifies intent                           │
+                    │  Routes to appropriate sub-agent              │
+                    │  Aggregates results                           │
+                    │                                              │
+                    └───┬──────────┬──────────┬──────────┬────────┘
+                        │          │          │          │
+                ┌───────▼──────┐ ┌▼────────┐ ┌▼────────┐ ┌▼──────────┐
+                │              │ │         │ │         │ │           │
+                │ RAG Agent    │ │ STTM    │ │ Service │ │ DQ Agent  │
+                │ (current)    │ │ Agent   │ │ Now     │ │           │
+                │              │ │         │ │ Agent   │ │ Data      │
+                │ General KB   │ │ Data    │ │         │ │ Quality   │
+                │ questions    │ │ lineage │ │ Ticket  │ │ checks    │
+                │ → AI Search  │ │ queries │ │ create/ │ │ → ADF     │
+                │ → LLM        │ │ → AI    │ │ status  │ │           │
+                │              │ │ Search  │ │ → REST  │ │           │
+                └──────────────┘ └─────────┘ └─────────┘ └───────────┘
+```
+
+**What exists today and what's planned:**
+
+| Component | Status | Location |
+|-----------|--------|----------|
+| RAG Agent (general KB search + generate) | **Implemented** | `core/agent.py` |
+| STTM detection (prompt switching) | **Implemented** | `core/agent.py` (inline) |
+| Query rewrite (conversational context) | **Implemented** | `core/agent.py` |
+| Quality gate (retrieval score threshold) | **Implemented** | `core/agent.py` |
+| Suggested follow-up prompts | **Implemented** | `core/agent.py` |
+| Dual UI (Bot Service + Chainlit) | **Implemented** | `web/app.py` |
+| Entra ID SSO | **Implemented** | `web/auth.py`, `web/middleware.py` |
+| STTM as dedicated sub-agent | Planned | `core/agents/sttm_agent.py` |
+| ServiceNow integration agent | Planned | `core/agents/servicenow_agent.py` |
+| Data Quality / ADF agent | Planned | `core/agents/dq_agent.py` |
+| Coordinator / router | Planned | `core/orchestrator.py` |
+
+The expansion path requires no breaking changes — the current `invoke_agent()` and
+`invoke_agent_stream()` signatures remain stable. The coordinator would call
+sub-agent functions internally and return the same `AgentResult` structure.

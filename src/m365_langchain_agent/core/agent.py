@@ -23,7 +23,6 @@ from m365_langchain_agent.core.prompts import (
     QUERY_REFINE_PROMPT,
     OUT_OF_SCOPE_ANSWER,
 )
-from m365_langchain_agent.core import sttm
 from m365_langchain_agent.core.search import get_search_client
 
 logger = logging.getLogger(__name__)
@@ -374,11 +373,9 @@ async def invoke_agent(
     effective_top_k = top_k if top_k is not None else settings.default_top_k
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
-    is_sttm = sttm.is_sttm_query(query)
-    if is_sttm and not system_prompt:
+    if "sttm" in query.lower() and not system_prompt:
         effective_prompt = STTM_SYSTEM_PROMPT
         effective_top_k = max(effective_top_k, settings.sttm_top_k)
-        logger.info("STTM query detected — top_k=%d", effective_top_k)
 
     search_query = query
     query_was_rewritten = False
@@ -388,28 +385,14 @@ async def invoke_agent(
 
     search_client = await get_search_client()
 
-    # semantic_query tells the reranker what to score against.
-    # - History rewrite: rewritten query IS the enriched intent -> let reranker
-    #   use search_text (None). The raw follow-up is often too vague.
-    # - STTM hop augmentation: appended layer terms are noise -> use original query.
-    # - First turn / no rewrite: search_text == query -> None (no override needed).
-    reranker_query = None
-
-    sttm_hops = sttm.detect_hops(query) if is_sttm else []
-    if sttm_hops:
-        logger.info("STTM hop-by-hop: %d hops", len(sttm_hops))
-        raw_documents = await sttm.hop_search(search_client, search_query, sttm_hops, original_query=query)
-        documents = raw_documents
-    else:
-        raw_documents = await search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=reranker_query)
-        logger.info("Retrieved %d docs (top_k=%d) for: %s", len(raw_documents), effective_top_k, search_query[:100])
-        documents = raw_documents
+    raw_documents = await search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
+    logger.info("Retrieved %d docs (top_k=%d) for: %s", len(raw_documents), effective_top_k, search_query[:100])
+    documents = raw_documents
 
     if not documents:
         return AgentResult(answer=OUT_OF_SCOPE_ANSWER, sources=[], raw_chunks=[], full_prompt="")
 
-    if not sttm_hops:
-        original_score = max(
+    original_score = max(
             (d.get("reranker_score") or d.get("score", 0)) for d in documents
         )
         top_score = original_score
@@ -503,8 +486,7 @@ async def invoke_agent_stream(
     effective_top_k = top_k if top_k is not None else settings.default_top_k
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
-    is_sttm_q = sttm.is_sttm_query(query)
-    if is_sttm_q and not system_prompt:
+    if "sttm" in query.lower() and not system_prompt:
         effective_prompt = STTM_SYSTEM_PROMPT
         effective_top_k = max(effective_top_k, settings.sttm_top_k)
 
@@ -519,15 +501,9 @@ async def invoke_agent_stream(
     yield {"type": "event", "event": "search_start"}
 
     search_client = await get_search_client()
-    reranker_query = None  # rewritten query IS the enriched intent; don't override
 
-    sttm_hops = sttm.detect_hops(query) if is_sttm_q else []
-    if sttm_hops:
-        raw_documents = await sttm.hop_search(search_client, search_query, sttm_hops, original_query=query)
-        documents = raw_documents
-    else:
-        raw_documents = await search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=reranker_query)
-        documents = raw_documents
+    raw_documents = await search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
+    documents = raw_documents
 
     if not documents:
         yield {"type": "event", "event": "search_complete", "sources": 0}
@@ -544,40 +520,39 @@ async def invoke_agent_stream(
         return
 
     search_event_emitted = False
-    if not sttm_hops:
-        original_score = max(
-            (d.get("reranker_score") or d.get("score", 0)) for d in documents
-        )
-        top_score = original_score
-        retry_triggered = False
-        refined_query = None
-        retry_score = None
-        decision = "passed"
+    original_score = max(
+        (d.get("reranker_score") or d.get("score", 0)) for d in documents
+    )
+    top_score = original_score
+    retry_triggered = False
+    refined_query = None
+    retry_score = None
+    decision = "passed"
 
-        if settings.retrieval_score_threshold > 0 and top_score < settings.retrieval_score_threshold:
-            retry_triggered = True
-            unique_src = _get_unique_source_names(documents)
-            yield {"type": "event", "event": "search_complete", "sources": len(unique_src)}
-            yield {"type": "event", "event": "refining_search"}
+    if settings.retrieval_score_threshold > 0 and top_score < settings.retrieval_score_threshold:
+        retry_triggered = True
+        unique_src = _get_unique_source_names(documents)
+        yield {"type": "event", "event": "search_complete", "sources": len(unique_src)}
+        yield {"type": "event", "event": "refining_search"}
 
-            refined_query = await _refine_query_for_retry(search_query, model_name)
-            if refined_query:
-                retry_raw = await search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=search_query)
-                if retry_raw:
-                    retry_score = max(
-                        (d.get("reranker_score") or d.get("score", 0)) for d in retry_raw
-                    )
-                    if retry_score >= top_score:
-                        raw_documents = retry_raw
-                        documents = retry_raw
-                        search_query = refined_query
-                        top_score = retry_score
-                        decision = "improved_via_retry"
-                    else:
-                        decision = "retry_worse_fallback"
+        refined_query = await _refine_query_for_retry(search_query, model_name)
+        if refined_query:
+            retry_raw = await search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=search_query)
+            if retry_raw:
+                retry_score = max(
+                    (d.get("reranker_score") or d.get("score", 0)) for d in retry_raw
+                )
+                if retry_score >= top_score:
+                    raw_documents = retry_raw
+                    documents = retry_raw
+                    search_query = refined_query
+                    top_score = retry_score
+                    decision = "improved_via_retry"
+                else:
+                    decision = "retry_worse_fallback"
 
-            if top_score < settings.retrieval_score_threshold:
-                decision = "blocked"
+        if top_score < settings.retrieval_score_threshold:
+            decision = "blocked"
 
         _log_retrieval_decision(search_query, original_score, retry_triggered, refined_query, retry_score, decision)
 
