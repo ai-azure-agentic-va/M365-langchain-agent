@@ -14,7 +14,7 @@ from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from m365_langchain_agent.config import settings, token_provider
-from m365_langchain_agent.exceptions import GenerationError, RetrievalError
+from m365_langchain_agent.exceptions import GenerationError
 from m365_langchain_agent.core.prompts import (
     SYSTEM_PROMPT,
     STTM_SYSTEM_PROMPT,
@@ -54,7 +54,7 @@ class AgentResult(TypedDict):
 # ---------------------------------------------------------------------------
 
 def _is_reasoning_model(deployment: str) -> bool:
-    return deployment.startswith("o3") or deployment.startswith("o1")
+    return deployment.startswith(("o1", "o3", "o4"))
 
 
 def _build_llm(temperature: float | None = None, model_name: str | None = None) -> AzureChatOpenAI:
@@ -378,10 +378,8 @@ async def invoke_agent(
         effective_top_k = max(effective_top_k, settings.sttm_top_k)
 
     search_query = query
-    query_was_rewritten = False
     if conversation_history:
         search_query = await _rewrite_query_with_history(query, conversation_history, model_name)
-        query_was_rewritten = search_query != query
 
     search_client = await get_search_client()
 
@@ -393,41 +391,41 @@ async def invoke_agent(
         return AgentResult(answer=OUT_OF_SCOPE_ANSWER, sources=[], raw_chunks=[], full_prompt="")
 
     original_score = max(
-            (d.get("reranker_score") or d.get("score", 0)) for d in documents
-        )
-        top_score = original_score
-        retry_triggered = False
-        refined_query = None
-        retry_score = None
-        decision = "passed"
+        (d.get("reranker_score") or d.get("score", 0)) for d in documents
+    )
+    top_score = original_score
+    retry_triggered = False
+    refined_query = None
+    retry_score = None
+    decision = "passed"
 
-        if settings.retrieval_score_threshold > 0 and top_score < settings.retrieval_score_threshold:
-            retry_triggered = True
-            refined_query = await _refine_query_for_retry(search_query, model_name)
-            if refined_query:
-                # Reranker should score against search_query (the best intent
-                # before refinement), not the raw vague follow-up.
-                retry_raw = await search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=search_query)
-                if retry_raw:
-                    retry_score = max(
-                        (d.get("reranker_score") or d.get("score", 0)) for d in retry_raw
-                    )
-                    if retry_score >= top_score:
-                        raw_documents = retry_raw
-                        documents = retry_raw
-                        search_query = refined_query
-                        top_score = retry_score
-                        decision = "improved_via_retry"
-                    else:
-                        decision = "retry_worse_fallback"
+    if settings.retrieval_score_threshold > 0 and top_score < settings.retrieval_score_threshold:
+        retry_triggered = True
+        refined_query = await _refine_query_for_retry(search_query, model_name)
+        if refined_query:
+            # Reranker should score against search_query (the best intent
+            # before refinement), not the raw vague follow-up.
+            retry_raw = await search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=search_query)
+            if retry_raw:
+                retry_score = max(
+                    (d.get("reranker_score") or d.get("score", 0)) for d in retry_raw
+                )
+                if retry_score >= top_score:
+                    raw_documents = retry_raw
+                    documents = retry_raw
+                    search_query = refined_query
+                    top_score = retry_score
+                    decision = "improved_via_retry"
+                else:
+                    decision = "retry_worse_fallback"
 
-            if top_score < settings.retrieval_score_threshold:
-                decision = "blocked"
+        if top_score < settings.retrieval_score_threshold:
+            decision = "blocked"
 
-        _log_retrieval_decision(search_query, original_score, retry_triggered, refined_query, retry_score, decision)
+    _log_retrieval_decision(search_query, original_score, retry_triggered, refined_query, retry_score, decision)
 
-        if decision == "blocked":
-            return AgentResult(answer=OUT_OF_SCOPE_ANSWER, sources=[], raw_chunks=raw_documents, full_prompt="")
+    if decision == "blocked":
+        return AgentResult(answer=OUT_OF_SCOPE_ANSWER, sources=[], raw_chunks=raw_documents, full_prompt="")
 
     all_doc_names = None
     unique_sources = _get_unique_source_names(raw_documents)
@@ -491,11 +489,9 @@ async def invoke_agent_stream(
         effective_top_k = max(effective_top_k, settings.sttm_top_k)
 
     search_query = query
-    query_was_rewritten = False
     if conversation_history:
         yield {"type": "event", "event": "rewriting_query"}
         search_query = await _rewrite_query_with_history(query, conversation_history, model_name)
-        query_was_rewritten = search_query != query
         yield {"type": "event", "event": "query_rewritten", "query": search_query}
 
     yield {"type": "event", "event": "search_start"}

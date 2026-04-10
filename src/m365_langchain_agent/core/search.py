@@ -80,7 +80,7 @@ class AsyncSearchClient:
 
         vector_query = VectorizedQuery(
             vector=query_vector,
-            k=retrieval_k,
+            k_nearest_neighbors=retrieval_k,
             fields=self.vector_field,
             exhaustive=True if self.exhaustive_knn else None,
         )
