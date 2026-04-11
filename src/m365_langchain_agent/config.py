@@ -11,10 +11,9 @@ before any user request arrives.
 """
 
 import logging
-import os
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-from pydantic import Field, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)

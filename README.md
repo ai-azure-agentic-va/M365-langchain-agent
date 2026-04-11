@@ -42,10 +42,10 @@ pip install -r requirements.txt
 cp .env.example .env    # Fill in your Azure resource values
 
 # 3. Run (Bot Service mode — default)
-python app.py
+python -m m365_langchain_agent
 
 # 4. Run (Chainlit UI mode)
-USER_INTERFACE=CHAINLIT_UI python app.py
+USER_INTERFACE=CHAINLIT_UI python -m m365_langchain_agent
 # Open http://localhost:8080/chat/
 
 # 5. Verify
@@ -203,7 +203,7 @@ User Question
 
 ### Search Details
 
-The search client (`utils/search.py`) performs **three-way hybrid search** in a single API call:
+The search client (`core/search.py`) performs **three-way hybrid search** in a single API call:
 
 1. **Keyword (BM25):** Full-text search on `chunk_content` using `en.microsoft` analyzer
 2. **Vector (HNSW):** Cosine similarity on `content_vector` (1536d from text-embedding-3-small)
@@ -309,13 +309,16 @@ All configuration is externalized. See [.env.example](.env.example) for the full
 
 | Group | Variables | Required |
 |-------|-----------|----------|
-| **Azure OpenAI** | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION`, `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | Yes |
+| **Azure Identity** | `AZURE_CLIENT_ID` | When multiple MSIs exist |
+| **Azure OpenAI** | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION`, `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`, `AZURE_OPENAI_EMBEDDING_DIMENSIONS` | Yes |
 | **Azure AI Search** | `AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_INDEX_NAME`, `AZURE_SEARCH_SEMANTIC_CONFIG_NAME`, `AZURE_SEARCH_EMBEDDING_FIELD` | Yes |
 | **CosmosDB** | `AZURE_COSMOS_ENDPOINT`, `AZURE_COSMOS_DATABASE`, `AZURE_COSMOS_CONTAINER` | Yes |
 | **Bot Framework** | `BOT_APP_ID`, `BOT_APP_PASSWORD` (empty for MSI), `BOT_AUTH_TENANT` | Bot mode only |
+| **Entra ID SSO** | `ENABLE_SSO`, `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET`, `ENTRA_REDIRECT_URI`, `SESSION_SECRET`, `SESSION_MAX_AGE`, `SESSION_IDLE_TIMEOUT` | SSO mode only |
+| **Key Vault** | `KEYVAULT_URL`, `ENTRA_CLIENT_SECRET_NAME`, `BOT_APP_PASSWORD_NAME`, `SESSION_SECRET_NAME` | Optional |
 | **AI Foundry** | `AZURE_FOUNDRY_ENDPOINT`, `AZURE_FOUNDRY_SUBSCRIPTION_ID`, `AZURE_FOUNDRY_RESOURCE_GROUP`, `AZURE_FOUNDRY_WORKSPACE` | Foundry registration only |
 | **LangSmith** | `LANGSMITH_API_KEY`, `LANGCHAIN_TRACING_V2`, `LANGCHAIN_PROJECT` | Optional |
-| **Application** | `USER_INTERFACE`, `SHOW_CHAT_SETTINGS`, `SHOW_STARTER_PROMPTS`, `SHOW_SUGGESTED_PROMPTS`, `STARTER_PROMPTS`, `DEFAULT_TOP_K`, `DEFAULT_TEMPERATURE`, `LOG_LEVEL`, `PORT` | No (have defaults) |
+| **Application** | `USER_INTERFACE`, `SHOW_CHAT_SETTINGS`, `SHOW_DEBUG_PANELS`, `SHOW_STARTER_PROMPTS`, `SHOW_SUGGESTED_PROMPTS`, `STARTER_PROMPTS`, `DEFAULT_TOP_K`, `DEFAULT_TEMPERATURE`, `LOG_LEVEL`, `PORT` | No (have defaults) |
 | **CosmosDB Tuning** | `COSMOS_TTL_SECONDS` (default: 86400), `COSMOS_MAX_MESSAGES` (default: 20) | No |
 
 ---
@@ -324,28 +327,59 @@ All configuration is externalized. See [.env.example](.env.example) for the full
 
 ```
 m365-langchain-agent/
-├── app.py                     # Entry point: FastAPI app + mode routing (Chainlit UI / Bot Service)
-│                              #   + MsiBotFrameworkAdapter (custom MSI auth for Bot SDK)
-├── m365_langchain_agent/
-│   ├── bot.py                 # Bot Framework ActivityHandler -- bridges Bot Service <> agent
-│   ├── agent.py               # LangChain RAG pipeline: search -> deduplicate -> generate
-│   │                          #   + model selection, reasoning model detection, source building
-│   ├── chainlit_app.py        # Chainlit UI: settings panel + debug accordions + citations
-│   ├── cosmos_store.py        # CosmosDB conversation history (get/save, TTL, max messages)
-│   ├── foundry_register.py    # AI Foundry agent registration via REST API
-│   └── utils/
-│       └── search.py          # Azure AI Search hybrid client (keyword + vector + semantic)
+├── src/m365_langchain_agent/        # Main package (src-layout)
+│   ├── __init__.py
+│   ├── __main__.py                  # Entry point: python -m m365_langchain_agent
+│   ├── config.py                    # Centralized settings (Pydantic BaseSettings + Key Vault)
+│   ├── models.py                    # Pydantic data models (AgentResult, Source, etc.)
+│   ├── exceptions.py               # Custom exception classes
+│   ├── cosmos.py                    # CosmosDB conversation history (get/save, TTL, max messages)
+│   ├── foundry.py                   # AI Foundry agent registration via REST API
+│   ├── key_vault.py                 # Azure Key Vault secret resolution
+│   ├── log_config.py               # Logging configuration
+│   ├── core/                        # RAG pipeline logic
+│   │   ├── agent.py                 # LangChain RAG pipeline: search → deduplicate → generate
+│   │   ├── prompts.py              # Prompt loading from txt files + env overrides
+│   │   └── search.py               # Azure AI Search hybrid client (keyword + vector + semantic)
+│   ├── bot/                         # Bot Framework integration
+│   │   ├── adapter.py              # MsiBotFrameworkAdapter (custom MSI auth for Bot SDK)
+│   │   └── handler.py              # Bot Framework ActivityHandler — bridges Bot Service ↔ agent
+│   ├── web/                         # Web layer (FastAPI + Chainlit)
+│   │   ├── app.py                   # FastAPI app factory + mode routing (Bot / Chainlit)
+│   │   ├── auth.py                  # Entra ID SSO OAuth flow
+│   │   ├── chainlit_app.py          # Chainlit UI: settings panel + debug accordions + citations
+│   │   ├── data_layer.py            # Chainlit data layer (CosmosDB-backed)
+│   │   ├── middleware.py            # Session + auth middleware
+│   │   └── routes.py               # Health, readiness, test/query endpoints
+│   └── prompts/                     # Prompt template files
+│       ├── system.txt               # Main RAG system prompt
+│       ├── sttm_system.txt          # STTM-specific system prompt
+│       ├── query_rewrite.txt        # Query rewriting prompt
+│       ├── query_refine.txt         # Query refinement prompt
+│       ├── suggested_prompts.txt    # Follow-up suggestion generation prompt
+│       └── out_of_scope.txt         # Out-of-scope detection prompt
+├── tests/                           # Test suite
+│   ├── conftest.py                  # Shared fixtures
+│   ├── test_smoke.py                # Smoke tests
+│   └── core/
+│       └── test_agent.py            # Agent unit tests
 ├── scripts/
-│   └── register_foundry_agent.py   # CLI wrapper for foundry_register.py
-├── deploy-container-apps.sh   # Container Apps deployment (resources must exist)
-├── Dockerfile                 # Python 3.10-slim, single-stage
+│   └── register_foundry_agent.py    # CLI wrapper for foundry.py
+├── public/                          # Static assets for Chainlit UI
+│   ├── ai-circle-logo.jpg           # App logo
+│   ├── custom.css                   # Custom styles
+│   └── debug-accordion.js           # Debug panel JS
 ├── docs/
-│   ├── ARCHITECTURE.md        # C4 diagrams (Context -> Container -> Component -> Code)
-│   └── images/                # Screenshots and diagrams (add yours here)
-│       └── sequence-diagram.png
-├── requirements.txt
-├── pyproject.toml
-└── .env.example               # All env vars with descriptions
+│   ├── ARCHITECTURE.md              # C4 diagrams (Context → Container → Component → Code)
+│   └── images/
+│       ├── sequence-diagram.png
+│       └── settings-panel.png
+├── deploy-container-apps.sh         # Container Apps deployment (resources must exist)
+├── Dockerfile                       # Python 3.10-slim, single-stage
+├── chainlit.md                      # Chainlit welcome page content
+├── pyproject.toml                   # Package metadata + dependencies
+├── requirements.txt                 # Pinned dependencies
+└── .env.example                     # All env vars with descriptions
 ```
 
 ---
