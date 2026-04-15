@@ -4,6 +4,7 @@ Queries the Azure AI Search index populated by the ingestion pipeline.
 Migrated to async for non-blocking I/O under concurrent load.
 """
 
+import asyncio
 import logging
 
 from azure.search.documents.aio import SearchClient
@@ -15,13 +16,17 @@ from m365_langchain_agent.config import settings, credential, token_provider
 logger = logging.getLogger(__name__)
 
 _client: "AsyncSearchClient | None" = None
+_lock = asyncio.Lock()
 
 
 async def get_search_client() -> "AsyncSearchClient":
     """Singleton — initializes on first call, reuses thereafter."""
     global _client
-    if _client is None:
-        _client = AsyncSearchClient()
+    if _client is not None:
+        return _client
+    async with _lock:
+        if _client is None:
+            _client = AsyncSearchClient()
     return _client
 
 
@@ -76,7 +81,11 @@ class AsyncSearchClient:
 
         retrieval_k = max(top_k * 3, 15) if self.semantic_config else top_k
 
-        query_vector = await self.embeddings.aembed_query(query)
+        try:
+            query_vector = await self.embeddings.aembed_query(query)
+        except Exception as e:
+            logger.error("Embedding failed for query '%s': %s", query[:80], e)
+            return []
 
         vector_query = VectorizedQuery(
             vector=query_vector,
@@ -89,6 +98,11 @@ class AsyncSearchClient:
             search_text=query,
             vector_queries=[vector_query],
             top=retrieval_k,
+            select=[
+                "chunk_content", "document_title", "source_url", "source_type",
+                "file_name", "chunk_index", "total_chunks", "page_number",
+                "pii_redacted",
+            ],
             include_total_count=True,
             query_type="semantic" if self.semantic_config else "simple",
             semantic_configuration_name=self.semantic_config or None,
@@ -99,25 +113,36 @@ class AsyncSearchClient:
             search_kwargs["filter"] = filter_expr
             logger.info("Search filter: %s", filter_expr)
 
-        results = await self._search_client.search(**search_kwargs)
-        total_count = getattr(results, "get_count", lambda: None)()
+        try:
+            results = await self._search_client.search(**search_kwargs)
 
-        docs = []
-        async for r in results:
-            docs.append({
-                "content": r.get("chunk_content", ""),
-                "score": r.get("@search.score", 0.0),
-                "reranker_score": r.get("@search.reranker_score", None),
-                "document_title": r.get("document_title", ""),
-                "source_url": r.get("source_url", ""),
-                "source_type": r.get("source_type", ""),
-                "file_name": r.get("file_name", ""),
-                "chunk_index": r.get("chunk_index", 0),
-                "total_chunks": r.get("total_chunks", 0),
-                "page_number": r.get("page_number", 0),
-                "pii_redacted": r.get("pii_redacted", False),
-            })
+            docs = []
+            async for r in results:
+                docs.append({
+                    "content": r.get("chunk_content", ""),
+                    "score": r.get("@search.score", 0.0),
+                    "reranker_score": r.get("@search.reranker_score", None),
+                    "document_title": r.get("document_title", ""),
+                    "source_url": r.get("source_url", ""),
+                    "source_type": r.get("source_type", ""),
+                    "file_name": r.get("file_name", ""),
+                    "chunk_index": r.get("chunk_index", 0),
+                    "total_chunks": r.get("total_chunks", 0),
+                    "page_number": r.get("page_number", 0),
+                    "pii_redacted": r.get("pii_redacted", False),
+                })
 
+            # get_count() is only populated after first page is fetched
+            total_count = getattr(results, "get_count", lambda: None)()
+        except Exception as e:
+            logger.error("Search failed for query '%s': %s", query[:80], e)
+            return []
+
+        # Sort by semantic reranker score (desc), fall back to hybrid RRF score
+        docs.sort(
+            key=lambda d: (d.get("reranker_score") or 0, d.get("score", 0)),
+            reverse=True,
+        )
         docs = docs[:top_k]
 
         total_label = f", total={total_count}" if total_count is not None else ""

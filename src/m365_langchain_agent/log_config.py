@@ -55,3 +55,19 @@ def setup_logging(level: str = "INFO", structured: bool = True) -> None:
             defaults={"request_id": ""},
         ))
     root.addHandler(handler)
+
+    # Silence noisy third-party loggers
+    for name in (
+        "azure.cosmos._cosmos_http_logging_policy",
+        "azure.cosmos.aio._cosmos_client_connection_async",
+        "azure.core.pipeline.policies.http_logging_policy",
+        "azure.identity",
+        "httpx",
+        "httpcore",
+        "engineio.server",
+        "engineio.client",
+        "socketio.server",
+        "socketio.client",
+        "chainlit",
+    ):
+        logging.getLogger(name).setLevel(logging.WARNING)

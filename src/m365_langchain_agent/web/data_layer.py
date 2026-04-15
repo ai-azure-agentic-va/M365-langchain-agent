@@ -73,7 +73,6 @@ class CosmosDataLayer(BaseDataLayer):
             async for item in cosmos.container.query_items(
                 query=query,
                 parameters=params,
-                enable_cross_partition_query=True,
             ):
                 items.append(item)
 

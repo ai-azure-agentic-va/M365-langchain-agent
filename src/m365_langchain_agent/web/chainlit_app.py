@@ -25,18 +25,19 @@ from m365_langchain_agent.web.data_layer import CosmosDataLayer
 
 logger = logging.getLogger(__name__)
 
+_PUBLIC_PREFIX = settings.chainlit_public_prefix.rstrip("/") or "public"
+
 # Chainlit UI config
 chainlit_config.ui.name = settings.app_display_name
 chainlit_config.ui.default_theme = "light"
-_public_prefix = settings.chainlit_public_prefix
-chainlit_config.ui.logo_file_url = f"{_public_prefix}/ai-circle-logo.jpg"
-chainlit_config.ui.default_avatar_file_url = f"{_public_prefix}/ai-circle-logo.jpg"
+chainlit_config.ui.logo_file_url = f"{_PUBLIC_PREFIX}/avatars/ai-circle-logo.jpg?v=6"
+chainlit_config.ui.default_avatar_file_url = f"{_PUBLIC_PREFIX}/avatars/ai-circle-logo.jpg?v=6"
 chainlit_config.ui.avatar_size = 40
 chainlit_config.features.spontaneous_file_upload = None
 chainlit_config.features.unsafe_allow_html = True
 chainlit_config.features.edit_message = False
-chainlit_config.ui.custom_css = "/public/custom.css?v=4"
-chainlit_config.ui.custom_js = "/public/debug-accordion.js?v=4"
+chainlit_config.ui.custom_css = f"{_PUBLIC_PREFIX}/custom.css?v=11"
+chainlit_config.ui.custom_js = f"{_PUBLIC_PREFIX}/debug-accordion.js?v=11"
 
 # Parse greeting / thanks words from env-var config (comma-separated)
 _GREETING_WORDS = {w.strip().lower() for w in settings.greeting_words.split(",") if w.strip()}
