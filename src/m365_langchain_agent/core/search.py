@@ -101,7 +101,7 @@ class AsyncSearchClient:
             select=[
                 "chunk_content", "document_title", "source_url", "source_type",
                 "file_name", "chunk_index", "total_chunks", "page_number",
-                "pii_redacted",
+                "pii_redacted", "breadcrumb",
             ],
             include_total_count=True,
             query_type="semantic" if self.semantic_config else "simple",
@@ -130,6 +130,7 @@ class AsyncSearchClient:
                     "total_chunks": r.get("total_chunks", 0),
                     "page_number": r.get("page_number", 0),
                     "pii_redacted": r.get("pii_redacted", False),
+                    "breadcrumb": r.get("breadcrumb", ""),
                 })
 
             # get_count() is only populated after first page is fetched

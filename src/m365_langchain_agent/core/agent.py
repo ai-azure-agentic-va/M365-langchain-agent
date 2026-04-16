@@ -34,6 +34,7 @@ class Source(TypedDict, total=False):
     url: str
     source_type: str
     file_name: str
+    breadcrumb: str
     page_number: int
     chunk_index: int
     total_chunks: int
@@ -127,6 +128,7 @@ def _build_sources(documents: list[dict]) -> list[Source]:
             url=safe_url,
             source_type=d.get("source_type", ""),
             file_name=d.get("file_name", ""),
+            breadcrumb=d.get("breadcrumb", ""),
             page_number=d.get("page_number", 0),
             chunk_index=d.get("chunk_index", 0),
             total_chunks=d.get("total_chunks", 0),
@@ -203,9 +205,13 @@ def _format_context(documents: list[dict], all_document_names: list[str] | None 
     for i, d in enumerate(documents):
         title = d.get("document_title") or d.get("file_name") or "Untitled"
         header = f"[{i+1}] (Source: {title})"
-        logical_path = _extract_logical_path(d.get("source_url", ""))
-        if logical_path:
-            header += f"\nPath: {logical_path}"
+        breadcrumb = d.get("breadcrumb", "")
+        if breadcrumb:
+            header += f"\nPath: {breadcrumb}"
+        else:
+            logical_path = _extract_logical_path(d.get("source_url", ""))
+            if logical_path:
+                header += f"\nPath: {logical_path}"
         parts.append(f"{header}\n{d['content']}")
 
     return hint + "\n\n".join(parts)
