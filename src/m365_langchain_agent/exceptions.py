@@ -1,25 +1,25 @@
-"""Typed exception hierarchy for structured error handling and alerting."""
+"""Exception hierarchy for the agent."""
 
 
 class AgentError(Exception):
-    """Base exception for all agent errors."""
+    pass
 
 
 class RetrievalError(AgentError):
-    """Azure AI Search query failed."""
+    pass
 
 
 class GenerationError(AgentError):
-    """LLM call failed."""
+    pass
 
 
 class AuthenticationError(AgentError):
-    """SSO or Bot Framework authentication failed."""
+    pass
 
 
 class ConfigurationError(AgentError):
-    """Missing or invalid configuration."""
+    pass
 
 
 class CosmosError(AgentError):
-    """CosmosDB operation failed."""
+    pass

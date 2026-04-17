@@ -1,8 +1,7 @@
 """Bot Framework adapter with Managed Identity support.
 
-The botbuilder-python SDK doesn't natively support UserAssignedMSI.
-This module provides MsiAppCredentials and MsiBotFrameworkAdapter
-that override token acquisition to use ManagedIdentityCredential.
+botbuilder-python SDK doesn't support UserAssignedMSI — this module
+overrides token acquisition to use ManagedIdentityCredential.
 """
 
 import logging
@@ -16,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 class MsiAppCredentials(AppCredentials):
-    """Bot credentials using Azure Managed Identity instead of client secret."""
 
     def __init__(self, app_id: str, tenant_id: str | None = None):
         super().__init__(app_id=app_id, channel_auth_tenant=tenant_id)
@@ -32,11 +30,7 @@ class MsiAppCredentials(AppCredentials):
 
 
 class MsiBotFrameworkAdapter(BotFrameworkAdapter):
-    """Adapter that uses Managed Identity for outbound auth.
-
-    Monkey-patches the name-mangled __get_app_credentials to return
-    MsiAppCredentials instead of MicrosoftAppCredentials.
-    """
+    # Monkey-patches __get_app_credentials (name-mangled) to use MSI instead of client secret
 
     def __init__(self, adapter_settings: BotFrameworkAdapterSettings):
         super().__init__(adapter_settings)
@@ -59,7 +53,6 @@ class MsiBotFrameworkAdapter(BotFrameworkAdapter):
 
 
 def create_adapter() -> BotFrameworkAdapter:
-    """Factory — returns MSI or standard adapter based on config."""
     adapter_settings = BotFrameworkAdapterSettings(
         app_id=settings.bot_app_id,
         app_password=settings.bot_app_password,

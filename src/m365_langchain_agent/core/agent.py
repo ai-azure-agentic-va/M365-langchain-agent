@@ -1,8 +1,4 @@
-"""RAG agent orchestrator — search, deduplicate, generate, cite.
-
-Pure LangChain (no LangGraph). Takes a user query + optional conversation history,
-searches the configured index, and returns a grounded answer with inline citations.
-"""
+"""RAG agent orchestrator — search, deduplicate, generate, cite."""
 
 import logging
 import re
@@ -50,10 +46,6 @@ class AgentResult(TypedDict):
     full_prompt: str
 
 
-# ---------------------------------------------------------------------------
-# LLM builder
-# ---------------------------------------------------------------------------
-
 def _is_reasoning_model(deployment: str) -> bool:
     return deployment.startswith(("o1", "o3", "o4"))
 
@@ -75,10 +67,6 @@ def _build_llm(temperature: float | None = None, model_name: str | None = None) 
         kwargs["temperature"] = temperature if temperature is not None else settings.default_temperature
     return AzureChatOpenAI(**kwargs)
 
-
-# ---------------------------------------------------------------------------
-# Source formatting
-# ---------------------------------------------------------------------------
 
 def _extract_section_label(content: str) -> str | None:
     head = content[:500]
@@ -160,15 +148,7 @@ def _get_unique_source_names(documents: list[dict]) -> list[str]:
 
 
 def _extract_logical_path(source_url: str) -> Optional[str]:
-    """Extract the human-readable logical path from a blob storage URL.
-
-    Strips the blob host and container, returning only the meaningful
-    folder/file hierarchy.  Example:
-        https://acct.blob.core.windows.net/container/Team-Wiki/Release/FeatureGuide.md
-        -> Team-Wiki/Release/FeatureGuide.md
-
-    Returns None if the URL is empty or has no path beyond the container.
-    """
+    """Strip blob host+container, return the meaningful folder/file path."""
     if not source_url or not source_url.strip():
         return None
     try:
@@ -182,7 +162,6 @@ def _extract_logical_path(source_url: str) -> Optional[str]:
 
 
 def _deduplicate_chunks(documents: list[dict]) -> list[dict]:
-    """Merge overlapping chunks from the same document (adjacent chunk_index)."""
     if len(documents) <= 1:
         return documents
 
@@ -238,7 +217,6 @@ def _format_context(documents: list[dict], all_document_names: list[str] | None 
 
 
 def format_sources_markdown(sources: list[Source]) -> str:
-    """Format sources as markdown with clickable links — deduplicated by file name."""
     if not sources:
         return ""
 
@@ -261,10 +239,6 @@ def format_sources_markdown(sources: list[Source]) -> str:
 
     return "\n".join(lines)
 
-
-# ---------------------------------------------------------------------------
-# Query rewriting
-# ---------------------------------------------------------------------------
 
 async def _rewrite_query_with_history(
     query: str,
@@ -315,10 +289,6 @@ async def _refine_query_for_retry(query: str, model_name: str | None = None) -> 
         return None
 
 
-# ---------------------------------------------------------------------------
-# Suggested prompts
-# ---------------------------------------------------------------------------
-
 async def generate_suggested_prompts(
     query: str,
     answer: str,
@@ -357,10 +327,6 @@ async def generate_suggested_prompts(
         return []
 
 
-# ---------------------------------------------------------------------------
-# Retrieval quality gate
-# ---------------------------------------------------------------------------
-
 def _log_retrieval_decision(
     query: str,
     original_score: float,
@@ -382,10 +348,6 @@ def _log_retrieval_decision(
     )
 
 
-# ---------------------------------------------------------------------------
-# Main invoke
-# ---------------------------------------------------------------------------
-
 async def invoke_agent(
     query: str,
     conversation_history: list[dict] | None = None,
@@ -395,7 +357,6 @@ async def invoke_agent(
     model_name: str | None = None,
     filter_expr: str | None = None,
 ) -> AgentResult:
-    """Invoke the RAG agent: search → deduplicate → generate → return structured result."""
     effective_top_k = top_k if top_k is not None else settings.default_top_k
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
@@ -427,8 +388,7 @@ async def invoke_agent(
     retry_score = None
     decision = "passed"
 
-    # Only apply score threshold when reranker scores are available.
-    # Without reranker, RRF fusion scores (~0.02) would always trigger false retries.
+    # Without reranker, RRF fusion scores (~0.02) would always trigger false retries
     threshold_active = settings.retrieval_score_threshold > 0 and has_reranker
     if threshold_active and top_score < settings.retrieval_score_threshold:
         retry_triggered = True
@@ -496,10 +456,6 @@ Answer:"""
         raise GenerationError(f"LLM call failed: {e}") from e
 
 
-# ---------------------------------------------------------------------------
-# Streaming invoke
-# ---------------------------------------------------------------------------
-
 async def invoke_agent_stream(
     query: str,
     conversation_history: list[dict] | None = None,
@@ -509,7 +465,6 @@ async def invoke_agent_stream(
     model_name: str | None = None,
     filter_expr: str | None = None,
 ):
-    """Streaming version — yields token strings and a final metadata dict."""
     effective_top_k = top_k if top_k is not None else settings.default_top_k
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 

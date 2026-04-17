@@ -1,8 +1,4 @@
-"""Chainlit data layer backed by CosmosDB.
-
-Enables the conversation history sidebar in Chainlit UI.
-Threads are scoped per user via user_id (Entra ID OID) when SSO is enabled.
-"""
+"""Chainlit data layer backed by CosmosDB."""
 
 import logging
 import time
@@ -33,7 +29,6 @@ def _ts_to_iso(ts) -> str:
 
 
 class CosmosDataLayer(BaseDataLayer):
-    """Minimal data layer exposing CosmosDB conversations in Chainlit's sidebar."""
 
     def build_debug_url(self) -> str:
         return ""

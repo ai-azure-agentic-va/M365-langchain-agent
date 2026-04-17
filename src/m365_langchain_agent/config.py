@@ -1,13 +1,7 @@
 """Centralized configuration — validated at startup, not on first request.
 
-Configuration sources (in priority order):
-  1. Azure Key Vault — secrets (client_secret, bot_password, session_secret)
-     are resolved from Key Vault when KEYVAULT_URL is set.
-  2. Environment variables / .env file — all settings read via Pydantic BaseSettings.
-  3. Defaults — sensible defaults for non-required fields.
-
-A missing required variable crashes the process immediately on import,
-before any user request arrives.
+Sources: Key Vault (secrets) → env vars / .env → defaults.
+Missing required vars crash on import, before any request arrives.
 """
 
 import logging
@@ -18,19 +12,10 @@ from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
 
-# Shared credential — single instance across all Azure SDK clients.
-# Initialized before Settings so Key Vault resolution can use it.
 credential = DefaultAzureCredential()
 token_provider = get_bearer_token_provider(credential, "https://cognitiveservices.azure.com/.default")
 
-
-# ---------------------------------------------------------------------------
-# Key Vault secret mapping
-# ---------------------------------------------------------------------------
-# Maps Key Vault secret name env var -> settings attribute to override.
-# Format: (kv_secret_name_attr, target_attr)
-# When KEYVAULT_URL is configured, each entry tries to fetch the secret
-# from Key Vault and overrides the target field if successful.
+# (kv_secret_name_attr, target_attr) — resolved from Key Vault when keyvault_url is set
 _KV_SECRET_MAP: list[tuple[str, str]] = [
     ("entra_client_secret_name", "entra_client_secret"),
     ("bot_app_password_name", "bot_app_password"),
@@ -39,10 +24,8 @@ _KV_SECRET_MAP: list[tuple[str, str]] = [
 
 
 def _resolve_from_keyvault(vault_url: str, secret_name: str) -> str | None:
-    """Fetch a single secret from Azure Key Vault. Returns None on failure."""
     try:
         from azure.keyvault.secrets import SecretClient
-
         client = SecretClient(vault_url=vault_url, credential=credential)
         secret = client.get_secret(secret_name)
         if secret and secret.value:
@@ -55,15 +38,14 @@ def _resolve_from_keyvault(vault_url: str, secret_name: str) -> str | None:
 
 
 class Settings(BaseSettings):
-    """Application settings — env vars + Key Vault for secrets."""
 
-    # --- App ---
+    # App
     port: int = 8080
     log_level: str = "INFO"
     user_interface: str = "BOT_SERVICE"
     workers: int = 4
 
-    # --- Azure OpenAI (required) ---
+    # Azure OpenAI
     azure_openai_endpoint: str
     azure_openai_deployment_name: str = "gpt-4.1"
     azure_openai_api_version: str = "2024-05-01-preview"
@@ -71,47 +53,44 @@ class Settings(BaseSettings):
     azure_openai_embedding_deployment: str = "text-embedding-3-large"
     azure_openai_embedding_dimensions: int = 3072
 
-    # --- Azure AI Search (required) ---
+    # Azure AI Search
     azure_search_endpoint: str
     azure_search_index_name: str
     azure_search_semantic_config_name: str = "custom-kb-semantic-config"
     azure_search_embedding_field: str = "content_vector"
     search_exhaustive_knn: bool = False
 
-    # --- CosmosDB (required) ---
+    # CosmosDB
     azure_cosmos_endpoint: str
     azure_cosmos_database: str = "m365-langchain-agent"
     azure_cosmos_container: str = "conversations"
     cosmos_ttl_seconds: int = 86400
     cosmos_max_messages: int = 20
 
-    # --- Bot Framework ---
+    # Bot Framework
     bot_app_id: str = ""
-    bot_app_password: str = ""       # Secret: resolved from Key Vault via bot_app_password_name
+    bot_app_password: str = ""
     bot_auth_tenant: str = ""
 
-    # --- Entra ID SSO ---
+    # Entra ID SSO
     entra_tenant_id: str = ""
     entra_client_id: str = ""
-    entra_client_secret: str = ""    # Secret: resolved from Key Vault via entra_client_secret_name
+    entra_client_secret: str = ""
     entra_redirect_uri: str = ""
-    session_secret: str = ""         # Secret: resolved from Key Vault via session_secret_name
+    session_secret: str = ""
     ai_va_admins_group_id: str = ""
     enable_sso: bool = True
     session_max_age: int = 28800
     session_idle_timeout: int = 900
     chainlit_auth_cookie_name: str = "access_token"
 
-    # --- Key Vault ---
-    # When keyvault_url is set, secrets are fetched from Key Vault.
-    # The *_name fields reference the secret names stored in Key Vault.
-    # If Key Vault is unavailable, falls back to the direct env var values above.
+    # Key Vault — *_name fields reference secret names in Key Vault
     keyvault_url: str = ""
     entra_client_secret_name: str = ""
     bot_app_password_name: str = ""
     session_secret_name: str = ""
 
-    # --- Agent ---
+    # Agent
     default_top_k: int = 8
     default_temperature: float = 0.2
     retrieval_score_threshold: float = 1.2
@@ -123,7 +102,7 @@ class Settings(BaseSettings):
     query_refine_prompt_override: str = ""
     out_of_scope_answer_override: str = ""
 
-    # --- UI ---
+    # UI
     app_display_name: str = "ETS VA Assistant"
     show_chat_settings: bool = True
     show_debug_panels: bool = False
@@ -137,14 +116,14 @@ class Settings(BaseSettings):
     thanks_words: str = "thank you,thanks,thankyou,ty,thx"
     thanks_response: str = "You're welcome! If you have any other questions, feel free to ask."
 
-    # --- Test endpoint ---
+    # Test endpoint
     test_query_token: str = ""
 
-    # --- Scaling ---
+    # Scaling
     llm_request_timeout: int = 60
     search_request_timeout: int = 30
 
-    # --- Foundry (optional — only for registration script) ---
+    # Foundry (optional — registration script only)
     azure_foundry_endpoint: str = ""
     azure_foundry_subscription_id: str = ""
     azure_foundry_resource_group: str = ""
@@ -155,12 +134,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _resolve_secrets_from_keyvault(self) -> "Settings":
-        """After loading env vars, override secret fields from Key Vault.
-
-        Priority: Key Vault > env var > default.
-        Only runs when keyvault_url is configured. If Key Vault is
-        unreachable, the env var fallback is kept silently.
-        """
         if not self.keyvault_url:
             return self
 

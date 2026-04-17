@@ -1,8 +1,4 @@
-"""Structured JSON logging with request ID correlation.
-
-Every log line carries a request_id so a single user's request
-can be traced across CosmosDB, AI Search, and Azure OpenAI in App Insights.
-"""
+"""Structured JSON logging with request ID correlation."""
 
 import json
 import logging
@@ -23,7 +19,6 @@ def set_request_id(rid: str | None = None) -> str:
 
 
 class StructuredFormatter(logging.Formatter):
-    """JSON log formatter with request ID injection."""
 
     def format(self, record: logging.LogRecord) -> str:
         log_entry = {
@@ -39,7 +34,6 @@ class StructuredFormatter(logging.Formatter):
 
 
 def setup_logging(level: str = "INFO", structured: bool = True) -> None:
-    """Configure root logger with structured or plain formatting."""
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
 

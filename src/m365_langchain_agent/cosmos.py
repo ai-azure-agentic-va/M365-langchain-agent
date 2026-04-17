@@ -1,12 +1,6 @@
 """Async CosmosDB conversation history store.
 
-Stores per-conversation message history so the agent can maintain
-multi-turn context. Each conversation is keyed by the Bot Framework
-conversation ID.
-
-Database:  configured via AZURE_COSMOS_DATABASE setting
-Container: configured via AZURE_COSMOS_CONTAINER setting (partition key: /conversation_id)
-TTL:       24 hours (configurable via COSMOS_TTL_SECONDS)
+Partition key: /conversation_id. TTL: configurable (default 24h).
 """
 
 import asyncio
@@ -27,7 +21,6 @@ _cosmos_lock = asyncio.Lock()
 
 
 async def get_cosmos_store() -> "AsyncCosmosStore":
-    """Singleton — initializes on first call, reuses thereafter."""
     global _store
     if _store is not None:
         return _store
@@ -39,7 +32,6 @@ async def get_cosmos_store() -> "AsyncCosmosStore":
 
 
 async def close_cosmos_store() -> None:
-    """Shutdown hook — closes the async CosmosDB client."""
     global _store
     if _store is not None:
         await _store.close()
@@ -47,7 +39,6 @@ async def close_cosmos_store() -> None:
 
 
 class AsyncCosmosStore:
-    """Async conversation history manager for CosmosDB."""
 
     def __init__(self) -> None:
         self.client = CosmosClient(
@@ -72,18 +63,7 @@ class AsyncCosmosStore:
             settings.cosmos_ttl_seconds,
         )
 
-    async def get_history(
-        self, conversation_id: str, user_id: str | None = None
-    ) -> list[dict]:
-        """Get conversation history for a given conversation.
-
-        Args:
-            conversation_id: The conversation ID.
-            user_id: Optional user ID for ownership validation.
-
-        Returns:
-            List of {"role": "user"|"assistant", "content": "..."} dicts.
-        """
+    async def get_history(self, conversation_id: str, user_id: str | None = None) -> list[dict]:
         try:
             item = await self.container.read_item(
                 item=conversation_id,
@@ -110,11 +90,6 @@ class AsyncCosmosStore:
         user_email: str | None = None,
         user_display_name: str | None = None,
     ) -> None:
-        """Append a user/bot turn to the conversation history.
-
-        Creates the document if it doesn't exist, or updates it with
-        the new turn appended. Stamps user identity on the conversation.
-        """
         try:
             try:
                 item = await self.container.read_item(

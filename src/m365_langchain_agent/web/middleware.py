@@ -15,12 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class SSOAuthMiddleware(BaseHTTPMiddleware):
-    """Enforces SSO authentication for /chat/ routes.
-
-    - Browser page loads (/chat/, /chat): redirect to login if no session cookie.
-    - Internal Chainlit requests (WebSocket, APIs, assets): inject user headers
-      if cookie present, otherwise pass through.
-    """
+    # Browser page loads → redirect to login. Internal Chainlit requests → pass through.
 
     _PASSTHROUGH_PREFIXES = (
         "/chat/ws/",

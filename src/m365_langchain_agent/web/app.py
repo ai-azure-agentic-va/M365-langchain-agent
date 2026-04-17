@@ -1,8 +1,4 @@
-"""FastAPI application factory with async lifespan management.
-
-Creates the app, registers routes, optionally mounts Chainlit UI
-and SSO middleware based on USER_INTERFACE setting.
-"""
+"""FastAPI application factory with async lifespan management."""
 
 import logging
 import os
@@ -26,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: initialize async clients. Shutdown: close them."""
+    """Startup/shutdown lifecycle for async clients."""
     setup_logging(level=settings.log_level)
     logger.info("Starting m365-langchain-agent v%s", __version__)
 
@@ -42,7 +38,6 @@ async def lifespan(app: FastAPI):
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
-    """Assigns a unique request ID to every inbound request for log correlation."""
 
     async def dispatch(self, request, call_next):
         rid = request.headers.get("x-request-id") or None
@@ -54,7 +49,6 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 
 
 def create_app() -> FastAPI:
-    """Build and configure the FastAPI application."""
     app = FastAPI(
         title="M365 LangChain Agent",
         description="RAG agent with Bot Framework, Chainlit UI, and CosmosDB",

@@ -1,7 +1,4 @@
-"""Entra ID SSO authentication for Chainlit UI.
-
-Implements OIDC Authorization Code Flow with MSAL and signed session cookies.
-"""
+"""Entra ID SSO — OIDC Authorization Code Flow with MSAL."""
 
 import logging
 import secrets
@@ -25,7 +22,6 @@ _msal_app = None
 
 
 def get_msal_app():
-    """Get or create the MSAL ConfidentialClientApplication."""
     global _msal_app
     if _msal_app is None:
         try:

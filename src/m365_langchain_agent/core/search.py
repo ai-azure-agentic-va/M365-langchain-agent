@@ -1,8 +1,4 @@
-"""Async Azure AI Search client — hybrid search (keyword + vector + semantic).
-
-Queries the Azure AI Search index populated by the ingestion pipeline.
-Migrated to async for non-blocking I/O under concurrent load.
-"""
+"""Async Azure AI Search client — hybrid search (keyword + vector + semantic)."""
 
 import asyncio
 import logging
@@ -20,7 +16,6 @@ _lock = asyncio.Lock()
 
 
 async def get_search_client() -> "AsyncSearchClient":
-    """Singleton — initializes on first call, reuses thereafter."""
     global _client
     if _client is not None:
         return _client
@@ -31,7 +26,6 @@ async def get_search_client() -> "AsyncSearchClient":
 
 
 async def close_search_client() -> None:
-    """Shutdown hook — closes the async search client."""
     global _client
     if _client is not None:
         await _client.close()
@@ -39,7 +33,6 @@ async def close_search_client() -> None:
 
 
 class AsyncSearchClient:
-    """Async wrapper around azure-search-documents for hybrid search."""
 
     def __init__(self) -> None:
         self._search_client = SearchClient(
@@ -65,17 +58,6 @@ class AsyncSearchClient:
         filter_expr: str | None = None,
         semantic_query: str | None = None,
     ) -> list[dict]:
-        """Hybrid search: keyword + vector + semantic ranking.
-
-        Args:
-            query: Search text (also used for embedding).
-            top_k: Number of results to return.
-            filter_expr: OData filter expression.
-            semantic_query: Optional original user intent for the semantic reranker.
-                When search_text is augmented (rewritten follow-ups, retry
-                refinements), pass the original query here so the reranker
-                scores against intent rather than the augmented text.
-        """
         if not query or not query.strip():
             return []
 
@@ -107,6 +89,7 @@ class AsyncSearchClient:
             query_type="semantic" if self.semantic_config else "simple",
             semantic_configuration_name=self.semantic_config or None,
         )
+        # Pass original user intent so reranker scores against intent, not augmented text
         if self.semantic_config and semantic_query:
             search_kwargs["semantic_query"] = semantic_query
         if filter_expr:
@@ -133,13 +116,11 @@ class AsyncSearchClient:
                     "breadcrumb": r.get("breadcrumb", ""),
                 })
 
-            # get_count() is only populated after first page is fetched
             total_count = getattr(results, "get_count", lambda: None)()
         except Exception as e:
             logger.error("Search failed for query '%s': %s", query[:80], e)
             return []
 
-        # Sort by semantic reranker score (desc), fall back to hybrid RRF score
         docs.sort(
             key=lambda d: (d.get("reranker_score") or 0, d.get("score", 0)),
             reverse=True,
@@ -154,7 +135,6 @@ class AsyncSearchClient:
         return docs
 
     async def search_document_names(self, query: str, top: int = 50) -> list[str]:
-        """Lightweight query to discover matching document names via faceting."""
         if not query or not query.strip():
             return []
 

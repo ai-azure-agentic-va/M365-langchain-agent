@@ -1,8 +1,4 @@
-"""Chainlit UI — browser-based chat interface for the RAG agent.
-
-Activated when USER_INTERFACE=CHAINLIT_UI. Provides a web chat UI
-with reasoning traces, debug panels, and conversation history sidebar.
-"""
+"""Chainlit UI chat interface for the RAG agent."""
 
 import json
 import logging
@@ -27,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 _PUBLIC_PREFIX = settings.chainlit_public_prefix.rstrip("/") or "public"
 
-# Chainlit UI config
 chainlit_config.ui.name = settings.app_display_name
 chainlit_config.ui.default_theme = "light"
 chainlit_config.ui.logo_file_url = f"{_PUBLIC_PREFIX}/avatars/ai-circle-logo.jpg?v=6"
@@ -39,7 +34,6 @@ chainlit_config.features.edit_message = False
 chainlit_config.ui.custom_css = f"{_PUBLIC_PREFIX}/custom.css?v=11"
 chainlit_config.ui.custom_js = f"{_PUBLIC_PREFIX}/debug-accordion.js?v=11"
 
-# Parse greeting / thanks words from env-var config (comma-separated)
 _GREETING_WORDS = {w.strip().lower() for w in settings.greeting_words.split(",") if w.strip()}
 _THANKS_WORDS = {w.strip().lower() for w in settings.thanks_words.split(",") if w.strip()}
 
@@ -119,8 +113,6 @@ async def rename_author(author: str) -> str:
     return author
 
 
-# Parse starter prompts once at startup for both Chainlit starters and the
-# /starter-prompts JSON endpoint (consumed by debug-accordion.js card enhancer).
 _STARTER_ITEMS: list[dict] = []
 if settings.show_starter_prompts:
     _raw = settings.starter_prompts.strip()
@@ -130,7 +122,6 @@ if settings.show_starter_prompts:
         except json.JSONDecodeError:
             logger.warning("STARTER_PROMPTS is not valid JSON — skipping starters")
 
-# Expose /starter-prompts JSON endpoint for the JS card enhancer.
 from chainlit.server import app as _chainlit_app
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -155,7 +146,6 @@ _chainlit_app.routes.insert(_catchall_idx, Route("/starter-prompts", _starter_pr
 
 @cl.set_starters
 async def set_starters():
-    """Return starter prompts from STARTER_PROMPTS when enabled."""
     if not _STARTER_ITEMS:
         return None
     return [
@@ -373,7 +363,6 @@ async def on_message(message: cl.Message):
         msg.content += answer
         await msg.update()
 
-    # Deduplicated source links
     source_lines = []
     seen_names: set[str] = set()
     for s in sources:

@@ -1,8 +1,4 @@
-"""Bot Framework ActivityHandler — bridges Bot Service and the RAG agent.
-
-Receives Activity messages from Azure Bot Service, invokes the RAG agent,
-stores conversation history in CosmosDB, and sends responses with citations.
-"""
+"""Bot Framework ActivityHandler — bridges Bot Service and the RAG agent."""
 
 import logging
 
@@ -17,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 class DocAgentBot(ActivityHandler):
-    """Bot that handles incoming messages and routes them to the RAG agent."""
 
     async def on_message_activity(self, turn_context: TurnContext) -> None:
         user_text = turn_context.activity.text

@@ -1,4 +1,4 @@
-"""FastAPI route handlers — health, readiness, test, auth, SSO status."""
+"""FastAPI route handlers."""
 
 import json
 import logging
@@ -38,7 +38,6 @@ def _get_bot():
 
 @router.post("/api/messages")
 async def messages(request: Request) -> Response:
-    """Bot Framework messaging endpoint."""
     content_type = request.headers.get("Content-Type", "")
     if "application/json" not in content_type:
         return Response(status_code=415)
@@ -102,10 +101,8 @@ async def starter_prompts():
 
 @router.post("/test/query")
 async def test_query(request: Request):
-    """Test endpoint — bypasses Bot Framework auth for RAG pipeline verification.
+    # Bypasses Bot Framework auth — for RAG pipeline verification only
 
-    When TEST_QUERY_TOKEN is set, requires Authorization: Bearer <token> header.
-    """
     if settings.test_query_token:
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Bearer ") or auth[7:] != settings.test_query_token:

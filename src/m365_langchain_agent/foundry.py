@@ -1,12 +1,4 @@
-"""Azure AI Foundry agent registration.
-
-Registers this agent in Azure AI Foundry using the Agents REST API,
-with Azure AI Search as a connected tool. Enables publishing to
-M365 Copilot and Teams through Foundry.
-
-Usage:
-    python -m m365_langchain_agent.foundry
-"""
+"""Azure AI Foundry agent registration (run via: python -m m365_langchain_agent.foundry)."""
 
 import logging
 
@@ -46,11 +38,6 @@ def register_agent(
     ),
     model: str = "gpt-4.1",
 ) -> dict:
-    """Register an agent in Azure AI Foundry with Azure AI Search tool.
-
-    Returns:
-        The API response dict with created agent details.
-    """
     base_url = _get_base_url()
     headers = _get_auth_headers()
 
@@ -91,7 +78,6 @@ def register_agent(
 
 
 def list_agents() -> list:
-    """List all registered agents in the Foundry workspace."""
     base_url = _get_base_url()
     headers = _get_auth_headers()
 
@@ -105,7 +91,6 @@ def list_agents() -> list:
 
 
 def delete_agent(agent_id: str) -> None:
-    """Delete an agent by ID."""
     base_url = _get_base_url()
     headers = _get_auth_headers()
 

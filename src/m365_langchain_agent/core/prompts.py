@@ -1,14 +1,4 @@
-"""Prompt templates for the RAG agent — loaded from .txt files.
-
-Prompts live as plain text files in the ``prompts/`` package directory so they
-can be reviewed, versioned, and edited independently of Python code.
-
-Override priority:
-  1. Environment variable (e.g. SYSTEM_PROMPT_OVERRIDE) — for deployment-time tuning
-  2. Prompt file (e.g. prompts/system.txt) — version-controlled default
-
-Prompt files are loaded once at import time via ``importlib.resources``.
-"""
+"""Prompt templates — loaded from .txt files, overridable via environment variables."""
 
 import importlib.resources
 import logging
@@ -19,15 +9,6 @@ logger = logging.getLogger(__name__)
 
 
 def _load_prompt(filename: str, env_override: str = "") -> str:
-    """Load a prompt from the prompts/ package directory.
-
-    Args:
-        filename: Name of the .txt file in the prompts/ directory.
-        env_override: If non-empty, this value takes precedence over the file.
-
-    Returns:
-        The prompt text (stripped of leading/trailing whitespace).
-    """
     if env_override:
         logger.debug("Prompt '%s' overridden via environment", filename)
         return env_override.strip()
@@ -41,36 +22,9 @@ def _load_prompt(filename: str, env_override: str = "") -> str:
         raise
 
 
-# ---------------------------------------------------------------------------
-# Loaded prompts — available as module-level constants
-# ---------------------------------------------------------------------------
-
-SYSTEM_PROMPT: str = _load_prompt(
-    "system.txt",
-    env_override=settings.system_prompt_override,
-)
-
-STTM_SYSTEM_PROMPT: str = _load_prompt(
-    "sttm_system.txt",
-    env_override=settings.sttm_system_prompt_override,
-)
-
-SUGGESTED_PROMPTS_PROMPT: str = _load_prompt(
-    "suggested_prompts.txt",
-    env_override=settings.suggested_prompts_prompt_override,
-)
-
-QUERY_REWRITE_PROMPT: str = _load_prompt(
-    "query_rewrite.txt",
-    env_override=settings.query_rewrite_prompt_override,
-)
-
-QUERY_REFINE_PROMPT: str = _load_prompt(
-    "query_refine.txt",
-    env_override=settings.query_refine_prompt_override,
-)
-
-OUT_OF_SCOPE_ANSWER: str = _load_prompt(
-    "out_of_scope.txt",
-    env_override=settings.out_of_scope_answer_override,
-)
+SYSTEM_PROMPT: str = _load_prompt("system.txt", env_override=settings.system_prompt_override)
+STTM_SYSTEM_PROMPT: str = _load_prompt("sttm_system.txt", env_override=settings.sttm_system_prompt_override)
+SUGGESTED_PROMPTS_PROMPT: str = _load_prompt("suggested_prompts.txt", env_override=settings.suggested_prompts_prompt_override)
+QUERY_REWRITE_PROMPT: str = _load_prompt("query_rewrite.txt", env_override=settings.query_rewrite_prompt_override)
+QUERY_REFINE_PROMPT: str = _load_prompt("query_refine.txt", env_override=settings.query_refine_prompt_override)
+OUT_OF_SCOPE_ANSWER: str = _load_prompt("out_of_scope.txt", env_override=settings.out_of_scope_answer_override)
