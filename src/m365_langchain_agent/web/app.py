@@ -12,9 +12,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 
+from starlette.middleware.base import BaseHTTPMiddleware
+
 from m365_langchain_agent import __version__
 from m365_langchain_agent.config import settings
-from m365_langchain_agent.log_config import setup_logging
+from m365_langchain_agent.log_config import setup_logging, set_request_id
 from m365_langchain_agent.cosmos import get_cosmos_store, close_cosmos_store
 from m365_langchain_agent.core.search import get_search_client, close_search_client
 from m365_langchain_agent.web.routes import router
@@ -39,6 +41,18 @@ async def lifespan(app: FastAPI):
     logger.info("Async clients closed")
 
 
+class RequestIdMiddleware(BaseHTTPMiddleware):
+    """Assigns a unique request ID to every inbound request for log correlation."""
+
+    async def dispatch(self, request, call_next):
+        rid = request.headers.get("x-request-id") or None
+        rid = set_request_id(rid)
+        request.state.request_id = rid
+        response = await call_next(request)
+        response.headers["x-request-id"] = rid
+        return response
+
+
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
     app = FastAPI(
@@ -48,6 +62,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.add_middleware(RequestIdMiddleware)
     app.include_router(router)
 
     user_interface = settings.user_interface.upper().strip()

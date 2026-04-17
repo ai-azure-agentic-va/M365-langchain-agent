@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     # --- Azure AI Search (required) ---
     azure_search_endpoint: str
     azure_search_index_name: str
-    azure_search_semantic_config_name: str = ""
+    azure_search_semantic_config_name: str = "custom-kb-semantic-config"
     azure_search_embedding_field: str = "content_vector"
     search_exhaustive_knn: bool = False
 
@@ -112,11 +112,16 @@ class Settings(BaseSettings):
     session_secret_name: str = ""
 
     # --- Agent ---
-    default_top_k: int = 5
+    default_top_k: int = 8
     default_temperature: float = 0.2
     retrieval_score_threshold: float = 1.2
     sttm_top_k: int = 20
+    system_prompt_override: str = ""
     sttm_system_prompt_override: str = ""
+    suggested_prompts_prompt_override: str = ""
+    query_rewrite_prompt_override: str = ""
+    query_refine_prompt_override: str = ""
+    out_of_scope_answer_override: str = ""
 
     # --- UI ---
     app_display_name: str = "ETS VA Assistant"
@@ -131,6 +136,9 @@ class Settings(BaseSettings):
     greeting_response: str = "Hello! I'm the **ETS Virtual Assistant**. How can I help you today?"
     thanks_words: str = "thank you,thanks,thankyou,ty,thx"
     thanks_response: str = "You're welcome! If you have any other questions, feel free to ask."
+
+    # --- Test endpoint ---
+    test_query_token: str = ""
 
     # --- Scaling ---
     llm_request_timeout: int = 60

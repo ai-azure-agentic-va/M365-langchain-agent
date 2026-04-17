@@ -9,6 +9,7 @@ Container: configured via AZURE_COSMOS_CONTAINER setting (partition key: /conver
 TTL:       24 hours (configurable via COSMOS_TTL_SECONDS)
 """
 
+import asyncio
 import logging
 import time
 
@@ -22,14 +23,18 @@ from m365_langchain_agent.exceptions import CosmosError
 logger = logging.getLogger(__name__)
 
 _store: "AsyncCosmosStore | None" = None
+_cosmos_lock = asyncio.Lock()
 
 
 async def get_cosmos_store() -> "AsyncCosmosStore":
     """Singleton — initializes on first call, reuses thereafter."""
     global _store
-    if _store is None:
-        _store = AsyncCosmosStore()
-        await _store.initialize()
+    if _store is not None:
+        return _store
+    async with _cosmos_lock:
+        if _store is None:
+            _store = AsyncCosmosStore()
+            await _store.initialize()
     return _store
 
 

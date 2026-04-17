@@ -69,6 +69,7 @@ def _build_llm(temperature: float | None = None, model_name: str | None = None) 
         azure_ad_token_provider=token_provider,
         azure_deployment=deployment,
         api_version=api_version,
+        request_timeout=settings.llm_request_timeout,
     )
     if not is_reasoning:
         kwargs["temperature"] = temperature if temperature is not None else settings.default_temperature
@@ -163,8 +164,8 @@ def _extract_logical_path(source_url: str) -> Optional[str]:
 
     Strips the blob host and container, returning only the meaningful
     folder/file hierarchy.  Example:
-        https://acct.blob.core.windows.net/container/NFCU-VA-WIKI/Release/PayGuard.md
-        -> NFCU-VA-WIKI/Release/PayGuard.md
+        https://acct.blob.core.windows.net/container/Team-Wiki/Release/FeatureGuide.md
+        -> Team-Wiki/Release/FeatureGuide.md
 
     Returns None if the URL is empty or has no path beyond the container.
     """
@@ -178,6 +179,25 @@ def _extract_logical_path(source_url: str) -> Optional[str]:
         return unquote(segments[1])
     except Exception:
         return None
+
+
+def _deduplicate_chunks(documents: list[dict]) -> list[dict]:
+    """Merge overlapping chunks from the same document (adjacent chunk_index)."""
+    if len(documents) <= 1:
+        return documents
+
+    seen_keys: set[tuple[str, int]] = set()
+    deduped: list[dict] = []
+    for d in documents:
+        key = (d.get("file_name", ""), d.get("chunk_index", -1))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(d)
+
+    if len(deduped) < len(documents):
+        logger.info("Deduplication: %d → %d chunks", len(documents), len(deduped))
+    return deduped
 
 
 def _format_context(documents: list[dict], all_document_names: list[str] | None = None) -> str:
@@ -379,7 +399,8 @@ async def invoke_agent(
     effective_top_k = top_k if top_k is not None else settings.default_top_k
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
-    if "sttm" in query.lower() and not system_prompt:
+    _sttm_triggers = {"sttm", "source to target", "data lineage", "data mapping", "field mapping", "column mapping", "etl mapping"}
+    if not system_prompt and any(t in query.lower() for t in _sttm_triggers):
         effective_prompt = STTM_SYSTEM_PROMPT
         effective_top_k = max(effective_top_k, settings.sttm_top_k)
 
@@ -391,11 +412,12 @@ async def invoke_agent(
 
     raw_documents = await search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
     logger.info("Retrieved %d docs (top_k=%d) for: %s", len(raw_documents), effective_top_k, search_query[:100])
-    documents = raw_documents
+    documents = _deduplicate_chunks(raw_documents)
 
     if not documents:
         return AgentResult(answer=OUT_OF_SCOPE_ANSWER, sources=[], raw_chunks=[], full_prompt="")
 
+    has_reranker = any(d.get("reranker_score") is not None for d in documents)
     original_score = max(
         (d.get("reranker_score") or d.get("score", 0)) for d in documents
     )
@@ -405,12 +427,13 @@ async def invoke_agent(
     retry_score = None
     decision = "passed"
 
-    if settings.retrieval_score_threshold > 0 and top_score < settings.retrieval_score_threshold:
+    # Only apply score threshold when reranker scores are available.
+    # Without reranker, RRF fusion scores (~0.02) would always trigger false retries.
+    threshold_active = settings.retrieval_score_threshold > 0 and has_reranker
+    if threshold_active and top_score < settings.retrieval_score_threshold:
         retry_triggered = True
         refined_query = await _refine_query_for_retry(search_query, model_name)
         if refined_query:
-            # Reranker should score against search_query (the best intent
-            # before refinement), not the raw vague follow-up.
             retry_raw = await search_client.search(refined_query, top_k=effective_top_k, filter_expr=filter_expr, semantic_query=search_query)
             if retry_raw:
                 retry_score = max(
@@ -418,7 +441,7 @@ async def invoke_agent(
                 )
                 if retry_score >= top_score:
                     raw_documents = retry_raw
-                    documents = retry_raw
+                    documents = _deduplicate_chunks(retry_raw)
                     search_query = refined_query
                     top_score = retry_score
                     decision = "improved_via_retry"
@@ -434,12 +457,12 @@ async def invoke_agent(
         return AgentResult(answer=OUT_OF_SCOPE_ANSWER, sources=[], raw_chunks=raw_documents, full_prompt="")
 
     all_doc_names = None
-    unique_sources = _get_unique_source_names(raw_documents)
+    unique_sources = _get_unique_source_names(documents)
     if len(unique_sources) > 1:
         all_doc_names = await search_client.search_document_names(search_query)
 
-    context = _format_context(raw_documents, all_document_names=all_doc_names)
-    sources = _build_sources(raw_documents)
+    context = _format_context(documents, all_document_names=all_doc_names)
+    sources = _build_sources(documents)
 
     messages = [SystemMessage(content=effective_prompt)]
     if conversation_history:
@@ -447,7 +470,7 @@ async def invoke_agent(
             if turn["role"] == "user":
                 messages.append(HumanMessage(content=turn["content"]))
             elif turn["role"] == "assistant":
-                messages.append(AIMessage(content=turn["content"]))
+                messages.append(AIMessage(content=turn["content"][:500]))
 
     user_prompt = f"""Question: {query}
 
@@ -468,7 +491,7 @@ Answer:"""
             len(answer), model_name or settings.azure_openai_deployment_name,
             len(cited_sources), len(sources),
         )
-        return AgentResult(answer=answer, sources=cited_sources, raw_chunks=raw_documents, full_prompt=full_prompt)
+        return AgentResult(answer=answer, sources=cited_sources, raw_chunks=documents, full_prompt=full_prompt)
     except Exception as e:
         raise GenerationError(f"LLM call failed: {e}") from e
 
@@ -490,7 +513,8 @@ async def invoke_agent_stream(
     effective_top_k = top_k if top_k is not None else settings.default_top_k
     effective_prompt = system_prompt if system_prompt else SYSTEM_PROMPT
 
-    if "sttm" in query.lower() and not system_prompt:
+    _sttm_triggers = {"sttm", "source to target", "data lineage", "data mapping", "field mapping", "column mapping", "etl mapping"}
+    if not system_prompt and any(t in query.lower() for t in _sttm_triggers):
         effective_prompt = STTM_SYSTEM_PROMPT
         effective_top_k = max(effective_top_k, settings.sttm_top_k)
 
@@ -505,7 +529,7 @@ async def invoke_agent_stream(
     search_client = await get_search_client()
 
     raw_documents = await search_client.search(search_query, top_k=effective_top_k, filter_expr=filter_expr)
-    documents = raw_documents
+    documents = _deduplicate_chunks(raw_documents)
 
     if not documents:
         yield {"type": "event", "event": "search_complete", "sources": 0}
@@ -522,6 +546,7 @@ async def invoke_agent_stream(
         return
 
     search_event_emitted = False
+    has_reranker = any(d.get("reranker_score") is not None for d in documents)
     original_score = max(
         (d.get("reranker_score") or d.get("score", 0)) for d in documents
     )
@@ -531,7 +556,8 @@ async def invoke_agent_stream(
     retry_score = None
     decision = "passed"
 
-    if settings.retrieval_score_threshold > 0 and top_score < settings.retrieval_score_threshold:
+    threshold_active = settings.retrieval_score_threshold > 0 and has_reranker
+    if threshold_active and top_score < settings.retrieval_score_threshold:
         retry_triggered = True
         unique_src = _get_unique_source_names(documents)
         yield {"type": "event", "event": "search_complete", "sources": len(unique_src)}
@@ -546,7 +572,7 @@ async def invoke_agent_stream(
                 )
                 if retry_score >= top_score:
                     raw_documents = retry_raw
-                    documents = retry_raw
+                    documents = _deduplicate_chunks(retry_raw)
                     search_query = refined_query
                     top_score = retry_score
                     decision = "improved_via_retry"
@@ -577,15 +603,15 @@ async def invoke_agent_stream(
             return
 
     all_doc_names = None
-    unique_sources = _get_unique_source_names(raw_documents)
+    unique_sources = _get_unique_source_names(documents)
     if len(unique_sources) > 1:
         all_doc_names = await search_client.search_document_names(search_query)
 
     if not search_event_emitted:
         yield {"type": "event", "event": "search_complete", "sources": len(unique_sources)}
 
-    context = _format_context(raw_documents, all_document_names=all_doc_names)
-    sources = _build_sources(raw_documents)
+    context = _format_context(documents, all_document_names=all_doc_names)
+    sources = _build_sources(documents)
 
     messages = [SystemMessage(content=effective_prompt)]
     if conversation_history:
@@ -593,7 +619,7 @@ async def invoke_agent_stream(
             if turn["role"] == "user":
                 messages.append(HumanMessage(content=turn["content"]))
             elif turn["role"] == "assistant":
-                messages.append(AIMessage(content=turn["content"]))
+                messages.append(AIMessage(content=turn["content"][:500]))
 
     user_prompt = f"""Question: {query}
 

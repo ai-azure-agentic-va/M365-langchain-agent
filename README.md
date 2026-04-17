@@ -99,7 +99,7 @@ The settings panel (gear icon in the Chainlit sidebar) lets you adjust agent beh
 | Setting | Type | Default | Range | Description |
 |---------|------|---------|-------|-------------|
 | **Model** | Dropdown | `gpt-4.1` | Configured models | Azure OpenAI deployment to use. Models listed in `AZURE_OPENAI_AVAILABLE_MODELS` env var (comma-separated). |
-| **Top K** | Slider | `5` | 1 -- 20 | Number of chunks to retrieve from Azure AI Search. Higher = more context but slower and more tokens. |
+| **Top K** | Slider | `8` | 1 -- 20 | Number of chunks to retrieve from Azure AI Search. Higher = more context but slower and more tokens. |
 | **Temperature** | Slider | `0.2` | 0.0 -- 1.0 (step 0.05) | LLM randomness. Lower = more deterministic and factual, higher = more creative. Ignored for reasoning models (o1, o3). |
 | **System Prompt** | Text Input | Default RAG prompt | Free text | Full system instructions for the LLM. Edit to change citation style, tone, or domain focus. |
 
@@ -174,7 +174,7 @@ User Question
       |
       v
   [1] Azure AI Search (hybrid: keyword + vector + semantic)
-      |  - Embeds query via text-embedding-3-small (1536d)
+      |  - Embeds query via text-embedding-3-large (3072d)
       |  - Runs hybrid search: BM25 keyword + HNSW cosine vector + semantic reranker
       |  - Returns top_k chunks with scores, metadata, and content
       v
@@ -206,7 +206,7 @@ User Question
 The search client (`core/search.py`) performs **three-way hybrid search** in a single API call:
 
 1. **Keyword (BM25):** Full-text search on `chunk_content` using `en.microsoft` analyzer
-2. **Vector (HNSW):** Cosine similarity on `content_vector` (1536d from text-embedding-3-small)
+2. **Vector (HNSW):** Cosine similarity on `content_vector` (3072d from text-embedding-3-large)
 3. **Semantic Reranker:** Cross-encoder reranking using the semantic configuration
 
 All three are combined by Azure AI Search's fusion algorithm. The semantic reranker score (when available) is used for source deduplication and display.
@@ -495,7 +495,7 @@ python scripts/register_foundry_agent.py --delete <agent-id>
 |----------|---------|
 | Azure Container Apps | Container hosting |
 | Azure Container Registry | Docker image storage |
-| Azure OpenAI | LLM (GPT-4.1) + embeddings (text-embedding-3-small) |
+| Azure OpenAI | LLM (GPT-4.1) + embeddings (text-embedding-3-large) |
 | Azure AI Search | Hybrid search index (keyword + vector + semantic) |
 | Azure Bot Service | Teams / WebChat / DirectLine channel routing |
 | Azure CosmosDB | Conversation state persistence (serverless, 24h TTL) |

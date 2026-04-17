@@ -12,7 +12,6 @@ Prompt files are loaded once at import time via ``importlib.resources``.
 
 import importlib.resources
 import logging
-import os
 
 from m365_langchain_agent.config import settings
 
@@ -48,7 +47,7 @@ def _load_prompt(filename: str, env_override: str = "") -> str:
 
 SYSTEM_PROMPT: str = _load_prompt(
     "system.txt",
-    env_override=os.environ.get("SYSTEM_PROMPT_OVERRIDE", ""),
+    env_override=settings.system_prompt_override,
 )
 
 STTM_SYSTEM_PROMPT: str = _load_prompt(
@@ -58,20 +57,20 @@ STTM_SYSTEM_PROMPT: str = _load_prompt(
 
 SUGGESTED_PROMPTS_PROMPT: str = _load_prompt(
     "suggested_prompts.txt",
-    env_override=os.environ.get("SUGGESTED_PROMPTS_PROMPT_OVERRIDE", ""),
+    env_override=settings.suggested_prompts_prompt_override,
 )
 
 QUERY_REWRITE_PROMPT: str = _load_prompt(
     "query_rewrite.txt",
-    env_override=os.environ.get("QUERY_REWRITE_PROMPT_OVERRIDE", ""),
+    env_override=settings.query_rewrite_prompt_override,
 )
 
 QUERY_REFINE_PROMPT: str = _load_prompt(
     "query_refine.txt",
-    env_override=os.environ.get("QUERY_REFINE_PROMPT_OVERRIDE", ""),
+    env_override=settings.query_refine_prompt_override,
 )
 
 OUT_OF_SCOPE_ANSWER: str = _load_prompt(
     "out_of_scope.txt",
-    env_override=os.environ.get("OUT_OF_SCOPE_ANSWER_OVERRIDE", ""),
+    env_override=settings.out_of_scope_answer_override,
 )

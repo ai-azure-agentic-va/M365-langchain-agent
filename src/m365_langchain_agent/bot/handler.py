@@ -49,7 +49,14 @@ class DocAgentBot(ActivityHandler):
             logger.error("CosmosDB read failed: %s", e)
             history = []
 
-        result = await invoke_agent(query=user_text, conversation_history=history)
+        try:
+            result = await invoke_agent(query=user_text, conversation_history=history)
+        except Exception as e:
+            logger.error("Agent invocation failed: %s", e)
+            await turn_context.send_activity(
+                "I'm sorry, I encountered an error processing your request. Please try again."
+            )
+            return
         answer = result["answer"]
         sources = result["sources"]
 

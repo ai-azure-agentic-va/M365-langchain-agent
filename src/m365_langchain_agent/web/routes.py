@@ -102,7 +102,15 @@ async def starter_prompts():
 
 @router.post("/test/query")
 async def test_query(request: Request):
-    """Test endpoint — bypasses Bot Framework auth for RAG pipeline verification."""
+    """Test endpoint — bypasses Bot Framework auth for RAG pipeline verification.
+
+    When TEST_QUERY_TOKEN is set, requires Authorization: Bearer <token> header.
+    """
+    if settings.test_query_token:
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer ") or auth[7:] != settings.test_query_token:
+            return Response(status_code=401, content="Unauthorized — set Authorization: Bearer <TEST_QUERY_TOKEN>")
+
     body = await request.json()
     query = body.get("query", "")
     conversation_id = body.get("conversation_id", "test-session")
@@ -181,7 +189,8 @@ async def auth_logout(request: Request):
 
 @router.get("/chat/auth/error")
 async def auth_error(request: Request):
-    message = request.query_params.get("message", "Authentication failed")
+    import html
+    message = html.escape(request.query_params.get("message", "Authentication failed"))
     return Response(
         content=f"<html><body><h1>Authentication Error</h1><p>{message}</p><p><a href='/chat/auth/login'>Try again</a></p></body></html>",
         media_type="text/html",
