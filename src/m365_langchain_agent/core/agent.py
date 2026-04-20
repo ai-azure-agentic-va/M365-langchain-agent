@@ -4,7 +4,7 @@ import logging
 import re
 from collections import Counter
 from typing import Optional, TypedDict
-from urllib.parse import quote, urlparse, unquote
+from urllib.parse import urlparse, unquote
 
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
@@ -87,6 +87,18 @@ def _extract_section_label(content: str) -> str | None:
     return None
 
 
+def _safe_citation_url(raw_url: str) -> str:
+    if not raw_url or not raw_url.strip():
+        return ""
+    try:
+        decoded = unquote(unquote(raw_url)).strip()
+        if decoded.startswith(("http://", "https://")):
+            return decoded.replace(" ", "%20")
+        return raw_url
+    except Exception:
+        return raw_url
+
+
 def _build_sources(documents: list[dict]) -> list[Source]:
     base_titles = [
         d.get("document_title") or d.get("file_name") or "Untitled"
@@ -102,7 +114,7 @@ def _build_sources(documents: list[dict]) -> list[Source]:
             preview += "..."
 
         raw_url = d.get("source_url", "")
-        safe_url = quote(raw_url, safe="/:@?&#=") if raw_url else ""
+        safe_url = _safe_citation_url(raw_url)
         base_title = base_titles[i]
 
         title = base_title
@@ -230,8 +242,7 @@ def format_sources_markdown(sources: list[Source]) -> str:
         url = s.get("url", "")
 
         if url:
-            safe_url = quote(url, safe="/:@?&#=")
-            link = f"[{name}]({safe_url})"
+            link = f"[{name}]({_safe_citation_url(url)})"
         else:
             link = f"**{name}**"
 
