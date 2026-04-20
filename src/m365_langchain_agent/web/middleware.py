@@ -50,7 +50,10 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
                     or path in self._PASSTHROUGH_EXACT
                 )
                 if not is_passthrough:
-                    return RedirectResponse(url="/chat/auth/login?next=/chat/&prompt=login")
+                    return RedirectResponse(
+                        url="/chat/auth/login?next=/chat/&prompt=login",
+                        status_code=303,
+                    )
 
         response = await call_next(request)
         return response

@@ -114,7 +114,7 @@ button[aria-label*="negative" i] {
     width: 120px;
     height: 120px;
     margin: 8px auto 12px;
-    background-image: url("avatars/ets_va.svg?v=5");
+    background-image: url("/chat/public/avatars/ai-circle-logo.jpg?v=7");
     background-repeat: no-repeat;
     background-position: center;
     background-size: contain;

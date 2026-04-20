@@ -21,18 +21,34 @@ from m365_langchain_agent.web.data_layer import CosmosDataLayer
 
 logger = logging.getLogger(__name__)
 
-_PUBLIC_PREFIX = settings.chainlit_public_prefix.rstrip("/") or "public"
+_raw_public_prefix = settings.chainlit_public_prefix.strip()
+if _raw_public_prefix.startswith(("http://", "https://", "/")):
+    _PUBLIC_PREFIX = _raw_public_prefix.rstrip("/")
+else:
+    normalized_public_prefix = _raw_public_prefix.strip("/")
+    _PUBLIC_PREFIX = f"/chat/{normalized_public_prefix}" if normalized_public_prefix else "/chat/public"
+
+# Chainlit's index HTML template rewrites href="/..." and src="/..." by prepending
+# the mount root_path (/chat) — see chainlit/server.py get_html_template. URLs
+# used in custom_css/custom_js must therefore be rooted WITHOUT /chat so that
+# after Chainlit's rewrite they resolve to /chat/public/...
+if _PUBLIC_PREFIX.startswith("/chat/"):
+    _HTML_ASSET_PREFIX = _PUBLIC_PREFIX[len("/chat"):]  # "/chat/public" -> "/public"
+elif _PUBLIC_PREFIX == "/chat":
+    _HTML_ASSET_PREFIX = "/"
+else:
+    _HTML_ASSET_PREFIX = _PUBLIC_PREFIX
 
 chainlit_config.ui.name = settings.app_display_name
 chainlit_config.ui.default_theme = "light"
-chainlit_config.ui.logo_file_url = f"{_PUBLIC_PREFIX}/avatars/ai-circle-logo.jpg?v=6"
-chainlit_config.ui.default_avatar_file_url = f"{_PUBLIC_PREFIX}/avatars/ai-circle-logo.jpg?v=6"
+chainlit_config.ui.logo_file_url = f"{_PUBLIC_PREFIX}/avatars/ai-circle-logo.jpg?v=7"
+chainlit_config.ui.default_avatar_file_url = f"{_PUBLIC_PREFIX}/avatars/ai-circle-logo.jpg?v=7"
 chainlit_config.ui.avatar_size = 40
 chainlit_config.features.spontaneous_file_upload = None
 chainlit_config.features.unsafe_allow_html = True
 chainlit_config.features.edit_message = False
-chainlit_config.ui.custom_css = f"{_PUBLIC_PREFIX}/custom.css?v=11"
-chainlit_config.ui.custom_js = f"{_PUBLIC_PREFIX}/debug-accordion.js?v=11"
+chainlit_config.ui.custom_css = f"{_HTML_ASSET_PREFIX}/custom.css?v=24"
+chainlit_config.ui.custom_js = f"{_HTML_ASSET_PREFIX}/debug-accordion.js?v=24"
 
 _GREETING_WORDS = {w.strip().lower() for w in settings.greeting_words.split(",") if w.strip()}
 _THANKS_WORDS = {w.strip().lower() for w in settings.thanks_words.split(",") if w.strip()}
@@ -217,9 +233,31 @@ async def _init_chat_settings():
 
 @cl.on_chat_start
 async def on_chat_start():
-    conversation_id = f"chainlit-{uuid.uuid4().hex[:12]}"
+    # Use Chainlit's session.thread_id as conversation_id so update_thread (called by Chainlit
+    # before emitting first_interaction) and our save_turn write to the SAME Cosmos doc.
+    # Falls back to a generated id if session.thread_id is unavailable for any reason.
+    try:
+        chainlit_thread_id = cl.context.session.thread_id
+    except Exception as e:
+        chainlit_thread_id = None
+        logger.warning(
+            "on_chat_start: cl.context.session.thread_id unavailable (%s) — "
+            "falling back to generated id; sidebar refresh will regress to v24 behavior",
+            e,
+        )
+    if not chainlit_thread_id:
+        conversation_id = f"chainlit-{uuid.uuid4().hex[:12]}"
+        logger.warning(
+            "on_chat_start: chainlit_thread_id is empty — using fallback conversation_id=%s",
+            conversation_id,
+        )
+    else:
+        conversation_id = chainlit_thread_id
     cl.user_session.set("conversation_id", conversation_id)
-    logger.info("New session: conversation_id=%s", conversation_id)
+    logger.info(
+        "on_chat_start: conversation_id=%s chainlit_thread_id=%s",
+        conversation_id, chainlit_thread_id,
+    )
     await _init_chat_settings()
 
 
@@ -227,7 +265,7 @@ async def on_chat_start():
 async def on_chat_resume(thread: ThreadDict):
     conversation_id = thread["id"]
     cl.user_session.set("conversation_id", conversation_id)
-    logger.info("Resumed thread: conversation_id=%s", conversation_id)
+    logger.info("on_chat_resume: conversation_id=%s", conversation_id)
     await _init_chat_settings()
 
 
@@ -246,6 +284,14 @@ async def on_settings_update(chat_settings):
 @cl.on_message
 async def on_message(message: cl.Message):
     conversation_id = cl.user_session.get("conversation_id")
+    try:
+        chainlit_thread_id = cl.context.session.thread_id
+    except Exception:
+        chainlit_thread_id = None
+    logger.info(
+        "on_message: conversation_id=%s chainlit_thread_id=%s match=%s",
+        conversation_id, chainlit_thread_id, conversation_id == chainlit_thread_id,
+    )
     user_text = message.content
 
     if not user_text or not user_text.strip():
@@ -295,6 +341,8 @@ async def on_message(message: cl.Message):
     trace_lines.append(("intent", f"… {reasoning_template['intent']}"))
     msg.content = trace_lines[0][1]
     await msg.update()
+
+    message_sections: list[str] = []
 
     async for chunk in invoke_agent_stream(
         query=user_text,
@@ -408,7 +456,7 @@ async def on_message(message: cl.Message):
         search_parts.append("<hr>")
         search_parts.append(f"<b>Search Endpoint:</b> {escape(search_endpoint)}<br>")
         search_parts.append(f"<b>Index:</b> {escape(index_name)}<br>")
-        search_parts.append(f"<b>Top K:</b> {top_k}<br>")
+        search_parts.append(f"<b>Top K Requested:</b> {top_k} &nbsp;|&nbsp; <b>Used:</b> {len(raw_chunks)}<br>")
         search_parts.append("<b>Chunk Size:</b> 1024 tokens (200 overlap)<br>")
         search_parts.append("<hr>")
         search_parts.append("<b>Hybrid Search Components:</b><br>")
@@ -430,8 +478,7 @@ async def on_message(message: cl.Message):
 
         chunk_parts = []
         chunk_parts.append(f"Query: {escape(user_text)}<br>")
-        chunk_parts.append(f"Index: {index_name} | Top K: {top_k} | Model: {model} | Temp: {temperature}<br>")
-        chunk_parts.append(f"Chunks retrieved: {len(raw_chunks)}<br><hr>")
+        chunk_parts.append(f"Index: {index_name} | Top K Requested: {top_k} | Used: {len(raw_chunks)} | Model: {model} | Temp: {temperature}<br><hr>")
         for i, chunk_data in enumerate(raw_chunks):
             title = escape(chunk_data.get("document_title") or chunk_data.get("file_name") or "Untitled")
             search_score = chunk_data.get("score", 0)
@@ -462,9 +509,9 @@ async def on_message(message: cl.Message):
         )
 
         settings_html = (
-            f"Model: {model}<br>Top K: {top_k}<br>Temperature: {temperature}<br>"
-            f"System Prompt: {prompt_type}<br>Index: {index_name}<br>"
-            f"Sources: {len(sources)}<br>Chunks: {len(raw_chunks)}"
+            f"Model: {model}<br>Top K Requested: {top_k}<br>Used: {len(raw_chunks)}<br>"
+            f"Temperature: {temperature}<br>System Prompt: {prompt_type}<br>"
+            f"Index: {index_name}<br>Sources: {len(sources)}"
         )
 
         accordion_msg = (
@@ -476,13 +523,14 @@ async def on_message(message: cl.Message):
             "</div>"
         )
 
-        await cl.Message(content=accordion_msg, author="assistant").send()
+        message_sections.append(accordion_msg)
 
     try:
         user = cl.user_session.get("user")
         user_oid = user.identifier if user and user.identifier != "default-user" else None
-        user_name = user.metadata.get("name") if user else None
-        user_email = user.metadata.get("email") if user else None
+        user_meta = (user.metadata or {}) if user else {}
+        user_name = user_meta.get("name")
+        user_email = user_meta.get("email")
 
         cosmos = await get_cosmos_store()
         await cosmos.save_turn(
@@ -506,6 +554,12 @@ async def on_message(message: cl.Message):
             )
             if suggestions:
                 chips_html = _build_suggestion_chips_html(suggestions[:3])
-                await cl.Message(content=chips_html, author="assistant").send()
+                message_sections.append(chips_html)
         except Exception as e:
             logger.warning("Suggested prompts failed: %s", e)
+
+    if message_sections:
+        existing_content = msg.content or ""
+        suffix = "\n\n".join(message_sections)
+        msg.content = f"{existing_content}\n\n{suffix}" if existing_content else suffix
+        await msg.update()

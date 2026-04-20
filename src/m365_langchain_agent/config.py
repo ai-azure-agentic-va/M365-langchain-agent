@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     show_starter_prompts: bool = True
     starter_prompts: str = ""
     disable_data_layer: bool = False
-    chainlit_public_prefix: str = "public"
+    chainlit_public_prefix: str = "/chat/public"
     greeting_words: str = "hello,hi,hey,greetings,good morning,good afternoon,good evening,howdy,hola"
     greeting_response: str = "Hello! I'm the **ETS Virtual Assistant**. How can I help you today?"
     thanks_words: str = "thank you,thanks,thankyou,ty,thx"
