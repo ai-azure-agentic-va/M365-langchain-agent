@@ -47,8 +47,8 @@ chainlit_config.ui.avatar_size = 40
 chainlit_config.features.spontaneous_file_upload = None
 chainlit_config.features.unsafe_allow_html = True
 chainlit_config.features.edit_message = False
-chainlit_config.ui.custom_css = f"{_HTML_ASSET_PREFIX}/custom.css?v=24"
-chainlit_config.ui.custom_js = f"{_HTML_ASSET_PREFIX}/debug-accordion.js?v=24"
+chainlit_config.ui.custom_css = f"{_HTML_ASSET_PREFIX}/custom.css?v=25"
+chainlit_config.ui.custom_js = f"{_HTML_ASSET_PREFIX}/debug-accordion.js?v=25"
 
 _GREETING_WORDS = {w.strip().lower() for w in settings.greeting_words.split(",") if w.strip()}
 _THANKS_WORDS = {w.strip().lower() for w in settings.thanks_words.split(",") if w.strip()}

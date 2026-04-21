@@ -159,7 +159,7 @@
             function (e) {
               e.stopPropagation();
               e.preventDefault();
-              populateAndSend(btnRef.dataset.promptMessage || "");
+              populateInput(btnRef.dataset.promptMessage || "");
             },
             true
           );

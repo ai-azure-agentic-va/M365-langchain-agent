@@ -470,7 +470,10 @@ button[title*="copy" i],
 button[aria-label*="clipboard" i],
 button[title*="clipboard" i],
 [data-testid*="copy" i],
-[class*="copy" i] button {
+[class*="copy" i] button,
+button:has(> svg.lucide-copy),
+button:has(svg.lucide-copy),
+svg.lucide-copy {
     display: none !important;
 }
 
