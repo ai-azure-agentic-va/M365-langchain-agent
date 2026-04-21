@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "m365-langchain-agent"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.10"
 dependencies = [
     "langchain>=0.3.14",
@@ -13,17 +13,40 @@ dependencies = [
     "azure-search-documents>=11.6.0b7",
     "azure-identity>=1.19.0",
     "azure-cosmos>=4.7.0",
+    "azure-keyvault-secrets>=4.7.0",
     "botbuilder-core>=4.16.0",
     "botbuilder-integration-aiohttp>=4.16.0",
     "langsmith>=0.1.0",
     "fastapi>=0.115.0",
-    "uvicorn>=0.34.0",
+    "uvicorn[standard]>=0.34.0",
     "aiohttp>=3.9.0",
     "pydantic>=2.10.5",
+    "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.1",
     "chainlit>=1.3.0",
     "requests>=2.31.0",
+    "msal>=1.24.0",
+    "itsdangerous>=2.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
 ]
 
 [tool.setuptools.packages.find]
+where = ["src"]
 include = ["m365_langchain_agent*"]
+
+[tool.setuptools.package-data]
+"m365_langchain_agent.prompts" = ["*.txt"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

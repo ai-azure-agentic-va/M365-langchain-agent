@@ -7,6 +7,15 @@
   var ssoEnabled = null;
   var ssoStatusChecked = false;
 
+  // Sidebar refresh: Chainlit's frontend does not refetch the thread list after
+  // first_interaction. The only reload we perform is an explicit one when the
+  // user clicks the "New Chat" button (#new-chat-button). Reload is intercepted
+  // in capture phase so it happens BEFORE Chainlit's own click handler starts
+  // a new session — the fresh page load then shows the updated sidebar.
+  var SB_RELOAD_KEY = "sb_reload_last";
+  var SB_RELOAD_COOLDOWN_MS = 10000;
+  var sbNewChatBound = false;
+
   function getTextarea() {
     return document.querySelector("textarea");
   }
@@ -24,6 +33,24 @@
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     textarea.dispatchEvent(new Event("change", { bubbles: true }));
     textarea.focus();
+  }
+
+  function populateAndSend(text) {
+    populateInput(text);
+    // Give React a frame to observe the input change before clicking submit.
+    // Retry briefly in case the send button is still disabled (state not flushed).
+    var attempts = 0;
+    function trySubmit() {
+      var btn = document.getElementById("chat-submit");
+      if (btn && !btn.disabled) {
+        btn.click();
+        return;
+      }
+      if (attempts++ < 10) {
+        setTimeout(trySubmit, 30);
+      }
+    }
+    requestAnimationFrame(trySubmit);
   }
 
   function checkSsoStatus() {
@@ -261,6 +288,42 @@
     document.body.appendChild(button);
   }
 
+  function sbRateLimitOk() {
+    try {
+      var last = parseInt(sessionStorage.getItem(SB_RELOAD_KEY) || "0", 10);
+      return Date.now() - last > SB_RELOAD_COOLDOWN_MS;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function sbMarkReload() {
+    try {
+      sessionStorage.setItem(SB_RELOAD_KEY, String(Date.now()));
+    } catch (e) {}
+  }
+
+  function bindNewChatReload() {
+    if (sbNewChatBound) return;
+    sbNewChatBound = true;
+
+    document.addEventListener(
+      "click",
+      function (e) {
+        var target = e.target;
+        if (!target || typeof target.closest !== "function") return;
+        var btn = target.closest("#new-chat-button");
+        if (!btn) return;
+        if (!sbRateLimitOk()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        sbMarkReload();
+        location.reload();
+      },
+      true
+    );
+  }
+
   function applyUiUpdates() {
     checkSsoStatus();
     ensureLogoutButton();
@@ -269,6 +332,7 @@
     loadStarterData();
     enhanceNativeStarters();
     enhanceSuggestionChips();
+    bindNewChatReload();
   }
 
   function scheduleApply() {
@@ -314,4 +378,5 @@
   } else {
     init();
   }
+
 })();

@@ -108,10 +108,27 @@ button[aria-label*="negative" i] {
     padding-top: 8px !important;
 }
 
+#welcome-screen::before {
+    content: "";
+    display: block;
+    width: 120px;
+    height: 120px;
+    margin: 8px auto 12px;
+    background-image: url("/chat/public/avatars/ai-circle-logo.jpg?v=7");
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
+}
+
 #welcome-screen img,
 #welcome-screen [class*="logo"] img {
     max-height: 120px !important;
     object-fit: contain !important;
+}
+
+#welcome-screen [class*="logo"],
+#welcome-screen > img:first-of-type {
+    display: none !important;
 }
 
 #starters,
@@ -453,7 +470,10 @@ button[title*="copy" i],
 button[aria-label*="clipboard" i],
 button[title*="clipboard" i],
 [data-testid*="copy" i],
-[class*="copy" i] button {
+[class*="copy" i] button,
+button:has(> svg.lucide-copy),
+button:has(svg.lucide-copy),
+svg.lucide-copy {
     display: none !important;
 }
 

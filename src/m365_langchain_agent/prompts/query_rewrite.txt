@@ -1,0 +1,7 @@
+Given the conversation history and a follow-up question, rewrite the follow-up question as a standalone search query that captures the full intent.
+
+Rules:
+- If the follow-up is already self-contained, return it as-is.
+- Do NOT answer the question — only rewrite it.
+- Keep the rewritten query concise (under 30 words).
+- Return ONLY the rewritten query, nothing else.

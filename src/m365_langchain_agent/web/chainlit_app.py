@@ -1,15 +1,4 @@
-"""Chainlit UI — browser-based chat interface for the RAG agent.
-
-Activated when USER_INTERFACE=CHAINLIT_UI. Provides a web chat UI
-at http://localhost:8080 that calls the same invoke_agent() function
-as the Bot Framework path.
-
-Features:
-- Clickable source links to SharePoint/Wiki pages
-- In-line debug accordions: retrieved chunks, full LLM prompt, active settings
-- Dynamic settings: Top K, Temperature, System Prompt, Model selection
-- Conversation history via CosmosDB
-"""
+"""Chainlit UI chat interface for the RAG agent."""
 
 import json
 import logging
@@ -18,109 +7,73 @@ import uuid
 from html import escape
 from urllib.parse import quote
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-logger = logging.getLogger(__name__)
-
 import chainlit as cl
 from chainlit.config import config as chainlit_config
 from chainlit.input_widget import Select, Slider, TextInput
 from chainlit.types import ThreadDict
 from chainlit.user import User
 
-chainlit_config.ui.name = "ETS VA Assistant"
+from m365_langchain_agent.config import settings
+from m365_langchain_agent.core.agent import invoke_agent_stream, generate_suggested_prompts
+from m365_langchain_agent.core.prompts import SYSTEM_PROMPT
+from m365_langchain_agent.cosmos import get_cosmos_store
+from m365_langchain_agent.web.data_layer import CosmosDataLayer
+
+logger = logging.getLogger(__name__)
+
+_raw_public_prefix = settings.chainlit_public_prefix.strip()
+if _raw_public_prefix.startswith(("http://", "https://", "/")):
+    _PUBLIC_PREFIX = _raw_public_prefix.rstrip("/")
+else:
+    normalized_public_prefix = _raw_public_prefix.strip("/")
+    _PUBLIC_PREFIX = f"/chat/{normalized_public_prefix}" if normalized_public_prefix else "/chat/public"
+
+# Chainlit's index HTML template rewrites href="/..." and src="/..." by prepending
+# the mount root_path (/chat) — see chainlit/server.py get_html_template. URLs
+# used in custom_css/custom_js must therefore be rooted WITHOUT /chat so that
+# after Chainlit's rewrite they resolve to /chat/public/...
+if _PUBLIC_PREFIX.startswith("/chat/"):
+    _HTML_ASSET_PREFIX = _PUBLIC_PREFIX[len("/chat"):]  # "/chat/public" -> "/public"
+elif _PUBLIC_PREFIX == "/chat":
+    _HTML_ASSET_PREFIX = "/"
+else:
+    _HTML_ASSET_PREFIX = _PUBLIC_PREFIX
+
+chainlit_config.ui.name = settings.app_display_name
 chainlit_config.ui.default_theme = "light"
-chainlit_config.ui.logo_file_url = "/chat/public/ai-circle-logo.jpg"
-chainlit_config.ui.default_avatar_file_url = "/chat/public/ai-circle-logo.jpg"
+chainlit_config.ui.logo_file_url = f"{_PUBLIC_PREFIX}/avatars/ai-circle-logo.jpg?v=7"
+chainlit_config.ui.default_avatar_file_url = f"{_PUBLIC_PREFIX}/avatars/ai-circle-logo.jpg?v=7"
 chainlit_config.ui.avatar_size = 40
 chainlit_config.features.spontaneous_file_upload = None
 chainlit_config.features.unsafe_allow_html = True
 chainlit_config.features.edit_message = False
+chainlit_config.ui.custom_css = f"{_HTML_ASSET_PREFIX}/custom.css?v=25"
+chainlit_config.ui.custom_js = f"{_HTML_ASSET_PREFIX}/debug-accordion.js?v=25"
 
-chainlit_config.ui.custom_css = "/public/custom.css?v=4"
-chainlit_config.ui.custom_js = "/public/debug-accordion.js?v=4"
+_GREETING_WORDS = {w.strip().lower() for w in settings.greeting_words.split(",") if w.strip()}
+_THANKS_WORDS = {w.strip().lower() for w in settings.thanks_words.split(",") if w.strip()}
 
-SHOW_CHAT_SETTINGS = os.environ.get("SHOW_CHAT_SETTINGS", "true").lower().strip() == "true"
-SHOW_DEBUG_PANELS = os.environ.get("SHOW_DEBUG_PANELS", "false").lower().strip() == "true"
-SHOW_SUGGESTED_PROMPTS = os.environ.get("SHOW_SUGGESTED_PROMPTS", "true").lower().strip() == "true"
-_GREETING_WORDS = {"hello", "hi", "hey", "greetings", "good morning", "good afternoon", "good evening", "howdy", "hola"}
-_GREETING_RESPONSE = "Hello! I'm the **ETS Virtual Assistant**. How can I help you today?"
-_THANKS_WORDS = {"thank you", "thanks", "thankyou", "ty", "thx"}
-_THANKS_RESPONSE = "You're welcome! If you have any other questions, feel free to ask."
-
-from m365_langchain_agent.agent import (
-    invoke_agent_stream,
-    generate_suggested_prompts,
-    get_available_models,
-    SYSTEM_PROMPT,
-    DEFAULT_TOP_K,
-    DEFAULT_TEMPERATURE,
-    DEFAULT_MODEL,
-    _STTM_KEYWORDS,
-)
-from m365_langchain_agent.cosmos_store import get_cosmos_store
-from m365_langchain_agent.chainlit_data_layer import CosmosDataLayer
-
-_COMPARISON_KEYWORDS = frozenset({
-    "difference", "differences", "compare", "comparison", "vs", "versus",
-    "distinguish", "contrast", "differ", "similar", "similarities",
-})
-
-_REASONING_TEMPLATES: dict[str, dict] = {
-    "comparison": {
-        "intent":       "Understanding your comparison request",
-        "strategy":     "Determining approach — comparing across sources",
-        "retrieval":    "Reviewing {n} retrieved documents",
-        "reasoning":    "Identifying key differences and similarities",
-        "answer_prep":  "Preparing a structured comparison",
-    },
-    "sttm": {
-        "intent":       "Understanding your data lineage question",
-        "strategy":     "Determining approach — tracing field mappings across layers",
-        "retrieval":    "Reviewing {n} retrieved mappings",
-        "reasoning":    "Identifying transformation logic and hop-by-hop lineage",
-        "answer_prep":  "Preparing end-to-end lineage summary",
-    },
-    "general": {
-        "intent":       "Understanding your question",
-        "strategy":     "Determining approach — searching knowledge base",
-        "retrieval":    "Reviewing {n} retrieved documents",
-        "reasoning":    "Identifying key insights from retrieved information",
-        "answer_prep":  "Preparing a comprehensive answer",
-    },
+_REASONING_TEMPLATE: dict[str, str] = {
+    "intent":       "Understanding your question",
+    "strategy":     "Determining approach — searching knowledge base",
+    "retrieval":    "Reviewing {n} retrieved documents",
+    "reasoning":    "Identifying key insights from retrieved information",
+    "answer_prep":  "Preparing a comprehensive answer",
 }
 
 
-def _classify_query(query: str) -> str:
-    """Classify query intent for reasoning trace text. Returns template key."""
-    q = query.lower()
-    if any(kw in q for kw in _STTM_KEYWORDS):
-        return "sttm"
-    words = set(q.split())
-    if words & _COMPARISON_KEYWORDS:
-        return "comparison"
-    return "general"
-
-
 def _render_event(evt: dict, template: dict) -> list[tuple[str, str]] | None:
-    """Map an agent event to one or more reasoning trace lines."""
     name = evt.get("event", "")
 
     if name == "rewriting_query":
         return [("intent", f"… {template['intent']}")]
-
     if name == "query_rewritten":
         return [("intent", f"✔ {template['intent']}")]
-
     if name == "search_start":
         return [
             ("intent", f"✔ {template['intent']}"),
             ("strategy", f"… {template['strategy']}"),
         ]
-
     if name == "search_complete":
         n = evt.get("sources", 0)
         retrieval_text = template["retrieval"].format(n=n)
@@ -129,31 +82,25 @@ def _render_event(evt: dict, template: dict) -> list[tuple[str, str]] | None:
             ("retrieval", f"✔ {retrieval_text}"),
             ("reasoning", f"… {template['reasoning']}"),
         ]
-
     if name == "refining_search":
-        return [("strategy", f"… Refining search for better results")]
-
+        return [("strategy", "… Refining search for better results")]
     if name == "retry_search_complete":
         n = evt.get("sources", 0)
         retrieval_text = template["retrieval"].format(n=n)
         return [
-            ("strategy", f"✔ Refined search strategy"),
+            ("strategy", "✔ Refined search strategy"),
             ("retrieval", f"✔ {retrieval_text}"),
             ("reasoning", f"… {template['reasoning']}"),
         ]
-
     if name == "generating":
         return [
             ("reasoning", f"✔ {template['reasoning']}"),
             ("answer_prep", f"… {template['answer_prep']}"),
         ]
-
     return None
 
 
-_DISABLE_DATA_LAYER = os.environ.get("DISABLE_DATA_LAYER", "false").lower().strip() == "true"
-
-if not _DISABLE_DATA_LAYER:
+if not settings.disable_data_layer:
     @cl.data_layer
     def get_data_layer():
         return CosmosDataLayer()
@@ -161,67 +108,69 @@ if not _DISABLE_DATA_LAYER:
 
 @cl.header_auth_callback
 def header_auth_callback(headers: dict) -> User:
-    """Build the Chainlit user from SSO middleware headers."""
     user_oid = headers.get("x-user-oid")
     user_name = headers.get("x-user-name", "Unknown User")
     user_email = headers.get("x-user-email", "")
     user_role = headers.get("x-user-role", "user")
 
     if not user_oid:
-        logger.warning("[Chainlit] No user identity in headers — SSO may be disabled")
         return User(identifier="default-user", metadata={"role": "user"})
-
-    logger.info(f"[Chainlit] User authenticated: oid={user_oid}, name={user_name}, role={user_role}")
 
     return User(
         identifier=user_oid,
-        metadata={
-            "name": user_name,
-            "email": user_email,
-            "role": user_role,
-        }
+        metadata={"name": user_name, "email": user_email, "role": user_role},
     )
 
 
 @cl.author_rename
 async def rename_author(author: str) -> str:
-    """Display a friendly name while keeping stable assistant author id."""
     if author == "assistant":
-        return "ETS VA Assistant"
+        return settings.app_display_name
     return author
 
 
-SHOW_STARTER_PROMPTS = os.environ.get("SHOW_STARTER_PROMPTS", "true").lower().strip() == "true"
+_STARTER_ITEMS: list[dict] = []
+if settings.show_starter_prompts:
+    _raw = settings.starter_prompts.strip()
+    if _raw:
+        try:
+            _STARTER_ITEMS = [item for item in json.loads(_raw) if item.get("message")]
+        except json.JSONDecodeError:
+            logger.warning("STARTER_PROMPTS is not valid JSON — skipping starters")
+
+from chainlit.server import app as _chainlit_app
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+
+async def _starter_prompts_endpoint(request):
+    return JSONResponse({
+        "prompts": [
+            {"label": item.get("label", item["message"]), "message": item["message"]}
+            for item in _STARTER_ITEMS
+        ]
+    })
+
+
+# Insert before the catch-all /{full_path:path} route
+_catchall_idx = next(
+    (i for i, r in enumerate(_chainlit_app.routes) if getattr(r, 'path', '') == '/{full_path:path}'),
+    len(_chainlit_app.routes)
+)
+_chainlit_app.routes.insert(_catchall_idx, Route("/starter-prompts", _starter_prompts_endpoint))
 
 
 @cl.set_starters
 async def set_starters():
-    """Return starter prompts from `STARTER_PROMPTS` when enabled."""
-    if not SHOW_STARTER_PROMPTS:
-        return None
-    raw = os.environ.get("STARTER_PROMPTS", "").strip()
-    if not raw:
-        return None
-    try:
-        items = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("[Chainlit] STARTER_PROMPTS is not valid JSON — skipping starters")
-        return None
-    if not items:
+    if not _STARTER_ITEMS:
         return None
     return [
         cl.Starter(label=item.get("label", item["message"]), message=item["message"])
-        for item in items
-        if item.get("message")
+        for item in _STARTER_ITEMS
     ]
 
 
 def _build_suggestion_chips_html(suggestions: list[str]) -> str:
-    """Build HTML for follow-up suggestion chips.
-
-    Each chip is clickable text that populates the input and submits immediately.
-    The JS in debug-accordion.js handles the interactivity.
-    """
     chips = []
     for s in suggestions:
         safe = escape(s)
@@ -239,22 +188,22 @@ def _build_suggestion_chips_html(suggestions: list[str]) -> str:
 
 
 async def _init_chat_settings():
-    """Initialize ChatSettings widgets and store in session. Shared by start/resume."""
-    if SHOW_CHAT_SETTINGS:
-        available_models = get_available_models()
-        settings = await cl.ChatSettings(
+    if settings.show_chat_settings:
+        available_models = settings.available_models_list
+        default_model = settings.azure_openai_deployment_name
+        chat_settings = await cl.ChatSettings(
             [
                 Select(
                     id="model",
                     label="Model",
                     values=available_models,
-                    initial_value=DEFAULT_MODEL if DEFAULT_MODEL in available_models else available_models[0],
+                    initial_value=default_model if default_model in available_models else available_models[0],
                     description="Azure OpenAI deployment to use for generation.",
                 ),
                 Slider(
                     id="top_k",
                     label="Top K (Retrieved Chunks)",
-                    initial=DEFAULT_TOP_K,
+                    initial=settings.default_top_k,
                     min=1,
                     max=20,
                     step=1,
@@ -263,7 +212,7 @@ async def _init_chat_settings():
                 Slider(
                     id="temperature",
                     label="Temperature",
-                    initial=DEFAULT_TEMPERATURE,
+                    initial=settings.default_temperature,
                     min=0.0,
                     max=1.0,
                     step=0.05,
@@ -277,39 +226,55 @@ async def _init_chat_settings():
                 ),
             ]
         ).send()
-        cl.user_session.set("settings", settings)
+        cl.user_session.set("settings", chat_settings)
     else:
         cl.user_session.set("settings", {})
 
 
 @cl.on_chat_start
 async def on_chat_start():
-    """Initialize a new conversation session with configurable settings."""
-    conversation_id = f"chainlit-{uuid.uuid4().hex[:12]}"
+    # Use Chainlit's session.thread_id as conversation_id so update_thread (called by Chainlit
+    # before emitting first_interaction) and our save_turn write to the SAME Cosmos doc.
+    # Falls back to a generated id if session.thread_id is unavailable for any reason.
+    try:
+        chainlit_thread_id = cl.context.session.thread_id
+    except Exception as e:
+        chainlit_thread_id = None
+        logger.warning(
+            "on_chat_start: cl.context.session.thread_id unavailable (%s) — "
+            "falling back to generated id; sidebar refresh will regress to v24 behavior",
+            e,
+        )
+    if not chainlit_thread_id:
+        conversation_id = f"chainlit-{uuid.uuid4().hex[:12]}"
+        logger.warning(
+            "on_chat_start: chainlit_thread_id is empty — using fallback conversation_id=%s",
+            conversation_id,
+        )
+    else:
+        conversation_id = chainlit_thread_id
     cl.user_session.set("conversation_id", conversation_id)
-    logger.info(f"[Chainlit] New session: conversation_id={conversation_id}")
-
+    logger.info(
+        "on_chat_start: conversation_id=%s chainlit_thread_id=%s",
+        conversation_id, chainlit_thread_id,
+    )
     await _init_chat_settings()
 
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
-    """Resume a previous conversation thread from the sidebar."""
     conversation_id = thread["id"]
     cl.user_session.set("conversation_id", conversation_id)
-    logger.info(f"[Chainlit] Resumed thread: conversation_id={conversation_id}")
-
+    logger.info("on_chat_resume: conversation_id=%s", conversation_id)
     await _init_chat_settings()
 
 
 @cl.on_settings_update
-async def on_settings_update(settings):
-    """Handle settings changes from the UI."""
-    cl.user_session.set("settings", settings)
-    model = settings.get("model", DEFAULT_MODEL)
-    top_k = int(settings.get("top_k", DEFAULT_TOP_K))
-    temp = settings.get("temperature", DEFAULT_TEMPERATURE)
-    logger.info(f"[Chainlit] Settings updated: model={model}, top_k={top_k}, temperature={temp}")
+async def on_settings_update(chat_settings):
+    cl.user_session.set("settings", chat_settings)
+    model = chat_settings.get("model", settings.azure_openai_deployment_name)
+    top_k = int(chat_settings.get("top_k", settings.default_top_k))
+    temp = chat_settings.get("temperature", settings.default_temperature)
     await cl.Message(
         content=f"Settings updated: **Model:** `{model}` | **Top K:** `{top_k}` | **Temperature:** `{temp}`",
         author="assistant",
@@ -318,8 +283,15 @@ async def on_settings_update(settings):
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    """Handle incoming user messages with rich citation rendering and debug accordions."""
     conversation_id = cl.user_session.get("conversation_id")
+    try:
+        chainlit_thread_id = cl.context.session.thread_id
+    except Exception:
+        chainlit_thread_id = None
+    logger.info(
+        "on_message: conversation_id=%s chainlit_thread_id=%s match=%s",
+        conversation_id, chainlit_thread_id, conversation_id == chainlit_thread_id,
+    )
     user_text = message.content
 
     if not user_text or not user_text.strip():
@@ -328,32 +300,27 @@ async def on_message(message: cl.Message):
 
     normalized = user_text.strip().lower().rstrip("!.,?")
     if normalized in _GREETING_WORDS:
-        await cl.Message(content=_GREETING_RESPONSE, author="assistant").send()
+        await cl.Message(content=settings.greeting_response, author="assistant").send()
         return
     if normalized in _THANKS_WORDS:
-        await cl.Message(content=_THANKS_RESPONSE, author="assistant").send()
+        await cl.Message(content=settings.thanks_response, author="assistant").send()
         return
 
-    settings = cl.user_session.get("settings") or {}
-    model = settings.get("model", DEFAULT_MODEL)
-    top_k = int(settings.get("top_k", DEFAULT_TOP_K))
-    temperature = float(settings.get("temperature", DEFAULT_TEMPERATURE))
-    system_prompt = settings.get("system_prompt", SYSTEM_PROMPT)
-
-    logger.info(
-        f"[Chainlit] Message: conversation={conversation_id}, "
-        f"model={model}, top_k={top_k}, temp={temperature}, "
-        f"text={user_text[:100]}"
-    )
+    chat_settings = cl.user_session.get("settings") or {}
+    default_model = settings.azure_openai_deployment_name
+    model = chat_settings.get("model", default_model)
+    top_k = int(chat_settings.get("top_k", settings.default_top_k))
+    temperature = float(chat_settings.get("temperature", settings.default_temperature))
+    system_prompt = chat_settings.get("system_prompt", SYSTEM_PROMPT)
 
     try:
         user = cl.user_session.get("user")
         user_oid = user.identifier if user and user.identifier != "default-user" else None
 
-        cosmos = get_cosmos_store()
-        history = cosmos.get_history(conversation_id, user_id=user_oid)
+        cosmos = await get_cosmos_store()
+        history = await cosmos.get_history(conversation_id, user_id=user_oid)
     except Exception as e:
-        logger.error(f"[Chainlit] CosmosDB read failed: {e}")
+        logger.error("CosmosDB read failed: %s", e)
         history = []
 
     msg = cl.Message(content="", author="assistant")
@@ -368,12 +335,14 @@ async def on_message(message: cl.Message):
     query_rewritten = False
 
     trace_lines: list[tuple[str, str]] = []
-    reasoning_template = _REASONING_TEMPLATES[_classify_query(user_text)]
+    reasoning_template = _REASONING_TEMPLATE
     streaming_started = False
 
     trace_lines.append(("intent", f"… {reasoning_template['intent']}"))
     msg.content = trace_lines[0][1]
     await msg.update()
+
+    message_sections: list[str] = []
 
     async for chunk in invoke_agent_stream(
         query=user_text,
@@ -381,7 +350,7 @@ async def on_message(message: cl.Message):
         top_k=top_k,
         temperature=temperature,
         system_prompt=system_prompt if system_prompt != SYSTEM_PROMPT else None,
-        model_name=model if model != DEFAULT_MODEL else None,
+        model_name=model if model != default_model else None,
     ):
         if isinstance(chunk, dict):
             if chunk.get("type") == "event":
@@ -442,9 +411,8 @@ async def on_message(message: cl.Message):
         msg.content += answer
         await msg.update()
 
-    # Deduplicate sources by base file name — show each document only once
     source_lines = []
-    seen_names = set()
+    seen_names: set[str] = set()
     for s in sources:
         name = s.get("file_name") or s.get("title", "Untitled")
         if name in seen_names:
@@ -465,14 +433,14 @@ async def on_message(message: cl.Message):
 
     await msg.update()
 
-    if SHOW_DEBUG_PANELS and raw_chunks:
-        index_name = os.environ.get("AZURE_SEARCH_INDEX_NAME", "N/A")
-        search_endpoint = os.environ.get("AZURE_SEARCH_ENDPOINT", "N/A")
-        semantic_config = os.environ.get("AZURE_SEARCH_SEMANTIC_CONFIG_NAME", "")
-        embedding_model = os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large")
+    if settings.show_debug_panels and raw_chunks:
+        index_name = settings.azure_search_index_name
+        search_endpoint = settings.azure_search_endpoint
+        semantic_config = settings.azure_search_semantic_config_name
+        embedding_model = settings.azure_openai_embedding_deployment
         prompt_type = "Custom" if system_prompt != SYSTEM_PROMPT else "Default"
 
-        def _to_multiline_html(text: str, limit: int = None) -> str:
+        def _to_multiline_html(text: str, limit: int | None = None) -> str:
             safe = escape(text or "")
             if limit is not None:
                 safe = safe[:limit]
@@ -488,8 +456,8 @@ async def on_message(message: cl.Message):
         search_parts.append("<hr>")
         search_parts.append(f"<b>Search Endpoint:</b> {escape(search_endpoint)}<br>")
         search_parts.append(f"<b>Index:</b> {escape(index_name)}<br>")
-        search_parts.append(f"<b>Top K:</b> {top_k}<br>")
-        search_parts.append(f"<b>Chunk Size:</b> 1024 tokens (200 overlap)<br>")
+        search_parts.append(f"<b>Top K Requested:</b> {top_k} &nbsp;|&nbsp; <b>Used:</b> {len(raw_chunks)}<br>")
+        search_parts.append("<b>Chunk Size:</b> 1024 tokens (200 overlap)<br>")
         search_parts.append("<hr>")
         search_parts.append("<b>Hybrid Search Components:</b><br>")
         search_parts.append(f'&nbsp;&nbsp;1. <b>Keyword (BM25):</b> search_text = "{escape(search_query or user_text)}"<br>')
@@ -510,8 +478,7 @@ async def on_message(message: cl.Message):
 
         chunk_parts = []
         chunk_parts.append(f"Query: {escape(user_text)}<br>")
-        chunk_parts.append(f"Index: {index_name} | Top K: {top_k} | Model: {model} | Temp: {temperature}<br>")
-        chunk_parts.append(f"Chunks retrieved: {len(raw_chunks)}<br><hr>")
+        chunk_parts.append(f"Index: {index_name} | Top K Requested: {top_k} | Used: {len(raw_chunks)} | Model: {model} | Temp: {temperature}<br><hr>")
         for i, chunk_data in enumerate(raw_chunks):
             title = escape(chunk_data.get("document_title") or chunk_data.get("file_name") or "Untitled")
             search_score = chunk_data.get("score", 0)
@@ -533,7 +500,6 @@ async def on_message(message: cl.Message):
             chunk_parts.append(f"PII Redacted: {pii_redacted}<br>")
             chunk_parts.append(f"Source URL: {source_url}<br>")
             chunk_parts.append(f'<div class="debug-text-block">{_to_multiline_html(content_text, 500)}</div><br>')
-
         chunks_html = "".join(chunk_parts)
 
         prompt_html = (
@@ -543,9 +509,9 @@ async def on_message(message: cl.Message):
         )
 
         settings_html = (
-            f"Model: {model}<br>Top K: {top_k}<br>Temperature: {temperature}<br>"
-            f"System Prompt: {prompt_type}<br>Index: {index_name}<br>"
-            f"Sources: {len(sources)}<br>Chunks: {len(raw_chunks)}"
+            f"Model: {model}<br>Top K Requested: {top_k}<br>Used: {len(raw_chunks)}<br>"
+            f"Temperature: {temperature}<br>System Prompt: {prompt_type}<br>"
+            f"Index: {index_name}<br>Sources: {len(sources)}"
         )
 
         accordion_msg = (
@@ -557,16 +523,17 @@ async def on_message(message: cl.Message):
             "</div>"
         )
 
-        await cl.Message(content=accordion_msg, author="assistant").send()
+        message_sections.append(accordion_msg)
 
     try:
         user = cl.user_session.get("user")
         user_oid = user.identifier if user and user.identifier != "default-user" else None
-        user_name = user.metadata.get("name") if user else None
-        user_email = user.metadata.get("email") if user else None
+        user_meta = (user.metadata or {}) if user else {}
+        user_name = user_meta.get("name")
+        user_email = user_meta.get("email")
 
-        cosmos = get_cosmos_store()
-        cosmos.save_turn(
+        cosmos = await get_cosmos_store()
+        await cosmos.save_turn(
             conversation_id=conversation_id,
             user_message=user_text,
             bot_response=answer,
@@ -575,24 +542,24 @@ async def on_message(message: cl.Message):
             user_display_name=user_name,
         )
     except Exception as e:
-        logger.error(f"[Chainlit] CosmosDB write failed: {e}")
+        logger.error("CosmosDB write failed: %s", e)
 
-    logger.info(
-        f"[Chainlit] Response sent: conversation={conversation_id}, "
-        f"model={model}, sources={len(sources)}, raw_chunks={len(raw_chunks)}"
-    )
-
-    if SHOW_SUGGESTED_PROMPTS and answer and not answer.startswith("Sorry,"):
+    if settings.show_suggested_prompts and answer and not answer.startswith("Sorry,"):
         try:
             suggestions = await generate_suggested_prompts(
                 query=user_text,
                 answer=answer,
                 conversation_history=history,
-                model_name=model if model != DEFAULT_MODEL else None,
+                model_name=model if model != default_model else None,
             )
             if suggestions:
                 chips_html = _build_suggestion_chips_html(suggestions[:3])
-                await cl.Message(content=chips_html, author="assistant").send()
-                logger.info(f"[Chainlit] Showed {len(suggestions)} suggested prompts")
+                message_sections.append(chips_html)
         except Exception as e:
-            logger.warning(f"[Chainlit] Suggested prompts failed: {e}")
+            logger.warning("Suggested prompts failed: %s", e)
+
+    if message_sections:
+        existing_content = msg.content or ""
+        suffix = "\n\n".join(message_sections)
+        msg.content = f"{existing_content}\n\n{suffix}" if existing_content else suffix
+        await msg.update()

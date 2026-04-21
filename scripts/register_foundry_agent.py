@@ -9,14 +9,13 @@ Usage:
 
 import argparse
 import logging
-import sys
 
 from dotenv import load_dotenv
 
 load_dotenv()
 logging.basicConfig(level="INFO")
 
-from m365_langchain_agent.foundry_register import (
+from m365_langchain_agent.foundry import (
     register_agent,
     list_agents,
     delete_agent,
@@ -45,7 +44,6 @@ def main():
         print(f"Deleted agent: {args.delete}")
         return
 
-    # Default: register
     result = register_agent(name=args.name)
     print(f"Agent registered: id={result.get('id')}, name={result.get('name')}")
 
